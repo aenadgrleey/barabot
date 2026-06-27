@@ -1,0 +1,35 @@
+# Sample systemd unit for the reporter bot. Pairs with barabot.service.
+#
+# Install:
+#   sudo cp deploy/barabot-reporter.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now barabot-reporter.service
+#
+# Note: the reporter needs READ access to data/barabot.sqlite. The
+# barabot unit already grants write access; if the user differs, add
+# the reporter user to the barabot group, or make the sqlite file
+# world-readable.
+
+[Unit]
+Description=barabot reporter — pushes NEW-item notifications to Telegram
+After=network-online.target barabot.service
+Wants=network-online.target
+# Don't start the reporter if barabot's --check failed earlier in the boot.
+After=barabot.service
+
+[Service]
+Type=simple
+User=andrey
+WorkingDirectory=/root/projects/barabot
+ExecStartPre=/root/projects/barabot/.venv/bin/python -m barabot reporter --check
+ExecStart=/root/projects/barabot/.venv/bin/python -m barabot reporter
+ExecStop=/bin/kill -TERM $MAINPID
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/root/projects/barabot/data
