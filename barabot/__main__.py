@@ -4,8 +4,9 @@ Skeleton composer. Wires the live services (scraper, processor) into a
 single `asyncio.TaskGroup` and shares one `asyncio.Event` for shutdown.
 
 Lifecycle:
-  - Load config (lazy import to keep `--help` fast and config errors
-    specific).
+  - Validate config FIRST via `_load_config_or_exit()` — bad .env fails
+    here with a clear message and exit 2, before we touch asyncio,
+    Telethon, or the SQLite file.
   - Single-instance lock via `core.locks._acquire_lock` + PID file.
   - Spawn both services' `run(stop)` coroutines inside one TaskGroup —
     when `stop` fires, both wake up and exit their `try/finally`. The
@@ -26,6 +27,7 @@ import logging
 import signal
 import sys
 
+from barabot.core.config import Config
 from barabot.core.locks import _acquire_lock, _release_lock, _remove_pid, _write_pid
 from barabot.domains.processor import ProcessorService
 from barabot.domains.scraper import ScraperService
@@ -41,17 +43,24 @@ def _configure_logging(level: str) -> None:
     )
 
 
+def _load_config_or_exit() -> Config:
+    """Load + validate config, or print+exit on failure.
+
+    Single source of truth for the .env read. Both `--check` and the
+    bare `run` path funnel through here so they share one parser and
+    one set of error messages.
+    """
+    from barabot.core.config import load as barabot_load
+    try:
+        return barabot_load()
+    except Exception as exc:  # noqa: BLE001
+        print(f"config check failed: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+
 def _check_config() -> int:
-    try:
-        from barabot.core.config import load as barabot_load
-    except Exception as exc:  # noqa: BLE001
-        print(f"config check failed: {exc}", file=sys.stderr)
-        return 2
-    try:
-        cfg = barabot_load()
-    except Exception as exc:  # noqa: BLE001
-        print(f"config check failed: {exc}", file=sys.stderr)
-        return 2
+    """`run --check`: validate .env, print summary, return exit code."""
+    cfg = _load_config_or_exit()
     print(
         f"barabot config ok: api_id={cfg.api_id} "
         f"chats={len(cfg.watch_chats)} threshold={cfg.similarity_threshold} "
@@ -61,9 +70,11 @@ def _check_config() -> int:
 
 
 async def _run_barabot() -> None:
-    from barabot.core.config import load as barabot_load
-
-    cfg = barabot_load()
+    # Validate config BEFORE spinning up the event loop and TaskGroup.
+    # A bad .env should fail with a clear message, not crash inside
+    # Telethon/embed code 5s into startup. _load_config_or_exit() prints
+    # the specific reason and exits non-zero.
+    cfg = _load_config_or_exit()
     _configure_logging(cfg.log_level)
 
     lock_fd = _acquire_lock(cfg.lock_path)
