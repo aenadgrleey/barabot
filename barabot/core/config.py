@@ -1,4 +1,4 @@
-"""Config loading. Reads .env from the project root (three levels up from here)."""
+"""Config loading. Reads .env from the project root."""
 from __future__ import annotations
 
 import os
