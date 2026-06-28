@@ -1,4 +1,4 @@
-"""Config loading. Reads .env from the project root (one above this package)."""
+"""Config loading. Reads .env from the project root (three levels up from here)."""
 from __future__ import annotations
 
 import os
@@ -8,7 +8,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# barabot/core/config.py → barabot/core → barabot → <project>
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 
 _VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
