@@ -2,13 +2,15 @@
 
 Will eventually consume `UnifiedItem`s from the scraper, embed them,
 dedup against the SQLite store, and (for matching items) emit outbox
-events the bot domain polls. Today it's a no-op stub that runs inside
-an `asyncio.TaskGroup` and awaits a single `asyncio.Event` for shutdown.
+events the bot domain polls. Today it's a no-op stub that follows the
+same start / run_forever / stop lifecycle as every other service.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+
+from barabot.core.service import Service
 
 log = logging.getLogger("barabot.processor")
 
@@ -20,9 +22,14 @@ class ProcessorService:
         self.cfg = cfg
         self.conn = conn
 
-    async def run(self, stop: asyncio.Event) -> None:
+    async def start(self) -> None:
         log.info("processor (stub) start")
+
+    async def run_forever(self, stop: asyncio.Event) -> None:
         try:
             await stop.wait()
         finally:
-            log.info("processor (stub) stop")
+            pass
+
+    async def stop(self) -> None:
+        log.info("processor (stub) stop")
