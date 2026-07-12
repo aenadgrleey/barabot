@@ -1,153 +1,301 @@
-# bara_bot
+# Barabot
 
-Userbot, который слушает Telegram-чаты, эмбеддит сообщения и **пишет в лог**,
-когда в потоке появляется что-то **семантически новое** (cosine similarity
-ниже порога). Без лички, без пушей — только stdout и SQLite.
+Barabot — заготовка multi-tenant Telegram-бота для поиска интересующих объявлений в выбранных чатах.
 
-## Слоп-фичи
+Проект сейчас находится в процессе архитектурной переработки. Старый монолитный userbot удалён; вместо него строится один runtime из трёх независимых сервисов, связанных надёжными SQLite-очередями.
 
-- Подписка на список чатов через userbot (Pyrogram, MTProto).
-- Новые сообщения и **редактирования** идут в общий пайплайн.
-- Эмбеддинг через OpenAI-совместимый `/v1/embeddings` (по умолчанию OpenAI).
-- Линейный скан по SQLite, без очередей и воркеров.
-- WAL-режим, асинхронный слой поверх sync sqlite3, `BEGIN IMMEDIATE` на запись.
-- Concurrency-семафор и retry с exp-backoff для эмбеддинга.
-- Single-instance lock (`flock`), PID-файл, корректный SIGTERM.
-- `--check` для валидации конфига, sample systemd unit в `deploy/`.
-- Новые ивенты: `log.info("NEW: …")` + строка в `data/barabot.sqlite`.
-- Дубликаты: `log.info("dup: …")`, в базу не пишутся.
+> **Текущий статус:** инфраструктура и очереди готовы и протестированы, но scraper, processor и bot пока являются заглушками. Запуск процесса проверяет конфигурацию и lifecycle, однако ещё не читает Telegram, не считает embeddings и не отправляет уведомления.
+
+## Архитектура
+
+```text
+Telegram
+   │
+   ▼
+ScraperService
+   │  inbox_queue
+   ▼
+ProcessorService
+   │  outbox_queue
+   ▼
+BotService
+   │
+   ▼
+Telegram user
+
+command_queue — входящие пользовательские команды и их replay/audit trail
+```
+
+Все сервисы работают в одном процессе под `asyncio.TaskGroup` и реализуют общий lifecycle:
+
+```python
+async def start() -> None
+async def run_forever(stop: asyncio.Event) -> None
+async def stop() -> None
+```
+
+Если один сервис падает, `TaskGroup` отменяет остальные. При `SIGINT` или `SIGTERM` общий stop-event запускает симметричное завершение сервисов в обратном порядке.
+
+## Что реализовано
+
+- единая точка входа `python -m barabot run`;
+- проверка конфигурации до запуска event loop;
+- общий lifecycle для scraper, processor и bot;
+- graceful shutdown по `SIGINT` и `SIGTERM`;
+- single-instance lock и PID-файл;
+- SQLite в WAL-режиме с `busy_timeout`;
+- сохранение существующей таблицы `items`;
+- три очереди: `inbox_queue`, `outbox_queue`, `command_queue`;
+- атомарный конкурентный `claim` через `UPDATE ... RETURNING`;
+- lease и повторный claim зависших задач;
+- `ack` с удалением обработанных строк;
+- `nack` с возвратом задачи в `pending` и накоплением текста ошибок;
+- идемпотентная постановка Telegram-сообщений в inbox по `(chat_id, msg_id)`;
+- тесты конкурентного доступа к очередям.
+
+## Что ещё не реализовано
+
+- подключение Telegram-клиента в `ScraperService`;
+- производный watch-list из пользовательских списков чатов;
+- вычисление дельты добавленных и удалённых чатов;
+- запись Telegram-сообщений в `inbox_queue`;
+- embedding и semantic matching в `ProcessorService`;
+- маршрутизация результатов конкретным пользователям;
+- чтение `outbox_queue` и отправка сообщений в `BotService`;
+- обработка пользовательских команд;
+- production-развёртывание и мониторинг.
+
+## Структура проекта
+
+```text
+barabot/
+├── __main__.py                 # CLI и runtime composer
+├── core/
+│   ├── config.py               # загрузка и валидация .env
+│   ├── db.py                   # SQLite schema, migrations, WAL
+│   ├── locks.py                # process lock и PID-файл
+│   ├── queue.py                # enqueue/claim/ack/nack
+│   └── service.py              # общий Service Protocol
+└── domains/
+    ├── scraper/service.py      # Telegram intake, пока stub
+    ├── processor/service.py    # embeddings/matching, пока stub
+    └── bot/
+        ├── service.py          # Telegram delivery, пока stub
+        ├── client.py           # временный backend Protocol
+        └── model/              # модели сообщений и событий
+
+tests/test_queue.py             # тесты трёх SQLite-очередей
+deploy/barabot.service          # sample systemd unit
+```
+
+## Требования
+
+- Python 3.11+
+- SQLite 3.35+ (`RETURNING` используется при claim/enqueue)
+- Telegram API credentials с [my.telegram.org](https://my.telegram.org)
+- OpenAI-совместимый embeddings endpoint
+
+Основные зависимости:
+
+- `telethon`
+- `openai`
+- `python-dotenv`
 
 ## Установка
 
 ```bash
-cd ~/projects/barabot
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+git clone git@github.com:aenadgrleey/barabot.git
+cd barabot
+
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 cp .env.example .env
 ```
 
-## Настройка
+Для запуска тестов установи pytest в виртуальное окружение:
 
-1. Получить `API_ID` и `API_HASH` на https://my.telegram.org
-2. Сминтить сессию (один раз):
-   ```bash
-   python -m barabot.session_gen
-   ```
-   Скопировать распечатанный `SESSION_STRING=...` в `.env`.
-3. Заполнить `WATCH_CHATS` (id через запятую; `-100…` для групп/каналов).
-4. Указать `OPENAI_API_KEY` или другой `EMBEDDING_URL`.
-5. Проверить конфиг:
-   ```bash
-   python -m barabot --check
-   ```
+```bash
+.venv/bin/pip install pytest
+```
+
+## Конфигурация
+
+Barabot читает `.env` из корня проекта.
+
+Обязательные переменные:
+
+```dotenv
+API_ID=123456
+API_HASH=0123456789abcdef0123456789abcdef
+SESSION_STRING=...
+OPENAI_API_KEY=...
+```
+
+Опциональные переменные и значения по умолчанию:
+
+```dotenv
+WATCH_CHATS=-1001234567890
+SIMILARITY_THRESHOLD=0.85
+EMBEDDING_MODEL=text-embedding-3-small
+EMBEDDING_URL=https://api.openai.com/v1/embeddings
+EMBEDDING_CONCURRENCY=4
+EMBEDDING_RETRIES=3
+EMBEDDING_TIMEOUT=30
+LOG_LEVEL=INFO
+```
+
+`.env` игнорируется Git и не должен попадать в коммиты.
+
+`WATCH_CHATS` пока сохраняется как переходная настройка. Планируемая модель — таблица пользовательских чатов и дедуплицированный watch-list, вычисляемый самим scraper.
+
+## Проверка конфигурации
+
+```bash
+.venv/bin/python -m barabot run --check
+```
+
+Пример:
+
+```text
+barabot config ok: api_id=123456 chats=2 threshold=0.85 log_level=INFO db=/path/to/barabot/data/barabot.sqlite
+```
+
+Команда проверяет:
+
+- наличие обязательных переменных;
+- формат `API_HASH`;
+- диапазон similarity threshold;
+- log level;
+- параметры concurrency, retries и timeout.
 
 ## Запуск
 
 ```bash
-python -m barabot
+.venv/bin/python -m barabot run
 ```
 
-Логи идут в stdout. Для долгого прогона:
+На текущем этапе процесс поднимет три lifecycle-заглушки и будет ждать сигнала остановки. Это smoke test runtime, а не функциональный запуск бота.
+
+Остановка:
 
 ```bash
-python -m barabot 2>&1 | tee -a data/barabot.log
+kill -TERM "$(cat data/barabot.pid)"
 ```
 
-### Под systemd
+Повторный `SIGINT`/`SIGTERM` используется как принудительный выход, если graceful shutdown завис.
 
-Скопировать `deploy/barabot.service` в `/etc/systemd/system/`,
-поправить `User=`, `WorkingDirectory=`, `ReadWritePaths=`:
+## Тесты
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
+Проверяются:
+
+- enqueue для всех трёх очередей;
+- inbox-дедупликация;
+- FIFO claim;
+- лимит пачки;
+- конкурентный claim без double-claim;
+- lease expiration и reclaim;
+- `ack` и `nack`;
+- накопление ошибок;
+- совместимость schema migration с существующей БД.
+
+Дополнительные локальные проверки:
+
+```bash
+.venv/bin/python -m compileall -q barabot tests
+git diff --check
+```
+
+## SQLite
+
+По умолчанию данные хранятся в:
+
+```text
+data/barabot.sqlite
+```
+
+Таблицы:
+
+- `items` — сообщения и embeddings из предыдущей реализации;
+- `inbox_queue` — сырые Telegram-сообщения для processor;
+- `outbox_queue` — готовые уведомления для bot;
+- `command_queue` — пользовательские команды.
+
+Состояния очереди:
+
+```text
+pending → processing → ack/delete
+               │
+               ├─ nack → pending
+               └─ expired lease → повторный claim
+```
+
+Обработанная строка удаляется через `ack`, а не хранится со статусом `done`. Это ограничивает бесконтрольный рост очередей. Для аудита команд понадобится отдельная политика хранения до подключения реального command processor.
+
+Быстрая проверка базы:
+
+```bash
+sqlite3 data/barabot.sqlite 'PRAGMA integrity_check;'
+sqlite3 data/barabot.sqlite \
+  "SELECT 'inbox', count(*) FROM inbox_queue
+   UNION ALL SELECT 'outbox', count(*) FROM outbox_queue
+   UNION ALL SELECT 'commands', count(*) FROM command_queue;"
+```
+
+## systemd
+
+В `deploy/barabot.service` лежит пример unit-файла. Перед установкой обязательно проверь:
+
+- `User=`;
+- `WorkingDirectory=`;
+- пути к `.venv`;
+- `ReadWritePaths=`;
+- команды запуска: актуальный CLI требует подкоманду `run`.
+
+Рекомендуемые команды внутри unit:
+
+```ini
+ExecStartPre=/path/to/barabot/.venv/bin/python -m barabot run --check
+ExecStart=/path/to/barabot/.venv/bin/python -m barabot run
+```
+
+После адаптации:
 
 ```bash
 sudo cp deploy/barabot.service /etc/systemd/system/barabot.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now barabot.service
-systemctl status barabot
-journalctl -u barabot -f
+systemctl status barabot.service
+journalctl -u barabot.service -f
 ```
 
-`ExecStartPre=python -m barabot --check` гарантирует, что systemd
-не запустит бота с битым `.env`.
+Сервис пока не следует включать как production-бот: доменные сервисы ещё являются заглушками.
 
-## Что увидишь
+## Ближайший этап
 
-```
-2026-06-23 14:02:11 INFO barabot: barabot up: watching 2 chat(s), threshold=0.85, db=.../barabot.sqlite, pid=12345
-2026-06-23 14:03:42 INFO barabot: NEW: chat=-1001234567890 chat_title='Барахолка Тель-Авив' msg=4567 score=0.42 text='продам горный велосипед, 1500 шек, Хайфа'
-2026-06-23 14:03:55 INFO barabot: dup: chat=-1001234567890 msg=4568 score=0.91 (matches msg 4567)
-2026-06-23 14:04:01 INFO barabot: received SIGTERM, shutting down
-2026-06-23 14:04:03 INFO barabot: barabot stopped cleanly
-```
+Следующий вертикальный срез:
 
-## Reporter bot (опционально)
+1. добавить таблицы `user_chats` и `user_prefs`;
+2. реализовать CRUD и тесты;
+3. получать активные чаты через `SELECT DISTINCT chat_id`;
+4. вычислять `added = target - current` и `removed = current - target`;
+5. подключить Telethon в `ScraperService`;
+6. класть новые сообщения в `inbox_queue`;
+7. проверить путь Telegram event → SQLite интеграционным тестом.
 
-Userbot пишет только в лог и SQLite. Если хочешь получать алерты **в Telegram**,
-подними второй процесс `reporter`. Он читает ту же SQLite, **не пишет в неё**,
-и при появлении новой строки шлёт форматированное сообщение в твой(и) чат(ы).
+После этого можно последовательно оживлять `ProcessorService`, а затем `BotService`.
 
-### Что умеет
+## Безопасность репозитория
 
-- `/start`, `/help` — приветствие
-- `/latest [N]` — последние N (default 10, max 100)
-- `/chats` — счётчики по чатам
-- `/search <текст>` — substring-поиск
-- `/get <chat_id> <msg_id>` — полный текст одного item
-- Авто-пуш: каждое новое «🆕 NEW» в момент записи
+Не коммитить:
 
-### Настройка
+- `.env` и Telegram session string;
+- API keys;
+- `data/*.sqlite`, WAL/SHM и lock-файлы;
+- `.venv/`;
+- `__pycache__/` и pytest cache.
 
-1. Создать бота через [@BotFather](https://t.me/BotFather), получить токен.
-2. Добавить в `.env`:
-   ```
-   REPORTER_BOT_TOKEN=...   # bot token from @BotFather
-   ALLOWED_CHAT_IDS=330216451   # your user id; comma-separated for multiple
-   REPORTER_POLL_INTERVAL=2.0
-   REPORTER_DEFAULT_LIMIT=10
-   ```
-3. Написать боту `/start` — он зарегистрирует чат в логах (если id уже в `ALLOWED_CHAT_IDS`).
-4. Запустить:
-   ```bash
-   python -m barabot reporter --check   # валидация
-   python -m barabot reporter           # запуск
-   ```
-
-### Под systemd
-
-```bash
-sudo cp deploy/barabot-reporter.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now barabot-reporter.service
-```
-
-Reporter зависит от `barabot.service` (см. `After=`), стартует **после** userbot.
-
-### Безопасность
-
-- `ALLOWED_CHAT_IDS` — **whitelist**. Пустой список ⇒ бот не отвечает ни на какие команды.
-- Reporter открывает БД **read-only** (`mode=ro` через URI). Не может ничего записать в barabot'овские embeddings/метаданные.
-- `flock` отдельный (`barabot-reporter.lock`), reporter и userbot не блокируют друг друга.
-
-## Что лежит в базе
-
-```bash
-sqlite3 ~/projects/barabot/data/barabot.sqlite \
-  'SELECT chat_id, msg_id, sender, substr(text, 1, 80), created_at FROM items ORDER BY created_at DESC LIMIT 20;'
-```
-
-## Тест без сети
-
-```bash
-.venv/bin/python smoke.py
-```
-
-Покрывает: валидацию конфига, WAL roundtrip, async-обёртки db, cosine,
-retry на 5xx (с реальным локальным HTTP-сервером), fail-fast на 4xx (через
-мок), single-instance lock через `flock`.
-
-## Что НЕ умеет (намеренно)
-
-- Нет очередей — обработка последовательная, как просили.
-- Нет загрузки истории — только то, что приходит после старта.
-- Нет алертов в личку, нет бота-командера — это наблюдатель.
-- Нет веб-интерфейса, тюнинга порогов на лету, классификации.
-- Нет multi-tenant.
+Все перечисленные пути должны оставаться в `.gitignore`.
