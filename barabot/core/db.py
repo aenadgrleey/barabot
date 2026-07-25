@@ -1,10 +1,7 @@
-"""SQLite layer with WAL mode and thread-safe async wrappers."""
+"""SQLite schema, migrations, and connection setup."""
 from __future__ import annotations
 
-import asyncio
 import sqlite3
-import struct
-import threading
 from pathlib import Path
 
 
@@ -89,13 +86,6 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
         # album; treat as single-photo". New writes carry the real value.
         conn.execute("ALTER TABLE items ADD COLUMN photo_count INTEGER NOT NULL DEFAULT 1")
 
-# One lock for the whole process. The connection is opened with
-# check_same_thread=False so the worker thread can drive it; the lock
-# serialises every call so we never have two threads hitting the conn
-# at once (which would corrupt the cursor/transaction state).
-_DB_LOCK = threading.Lock()
-
-
 def connect(path: Path) -> sqlite3.Connection:
     """Open the DB, ensure schema, turn on WAL. Idempotent — safe to call repeatedly."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -112,73 +102,3 @@ def connect(path: Path) -> sqlite3.Connection:
     # claim/ack from multiple services sharing one SQLite file.
     conn.execute("PRAGMA busy_timeout=5000")
     return conn
-
-
-def pack(vec: list[float]) -> bytes:
-    """Pack a list of floats into a compact little-endian float32 blob."""
-    return struct.pack(f"<{len(vec)}f", *vec)
-
-
-def unpack(blob: bytes) -> list[float]:
-    """Inverse of pack()."""
-    n = len(blob) // 4
-    return list(struct.unpack(f"<{n}f", blob))
-
-
-def upsert_sync(
-    conn: sqlite3.Connection,
-    *,
-    chat_id: int,
-    msg_id: int,
-    text: str,
-    embedding: list[float],
-    sender: str | None,
-    created_at: str,
-    photo_count: int = 1,
-) -> None:
-    """Atomic upsert. BEGIN IMMEDIATE acquires the write lock up front so
-    a parallel reader doesn't sneak in between SELECT and INSERT."""
-    with _DB_LOCK:
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            conn.execute(
-                """
-                INSERT INTO items (msg_id, chat_id, text, embedding, sender, created_at, photo_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(chat_id, msg_id) DO UPDATE SET
-                    text = excluded.text,
-                    embedding = excluded.embedding,
-                    sender = excluded.sender,
-                    created_at = excluded.created_at,
-                    photo_count = excluded.photo_count
-                """,
-                (msg_id, chat_id, text, pack(embedding), sender, created_at, photo_count),
-            )
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
-
-
-def iter_embeddings_sync(
-    conn: sqlite3.Connection, chat_id: int
-) -> list[tuple[int, str, list[float]]]:
-    """Return [(msg_id, text, vec), ...] for the chat — used for the linear scan."""
-    with _DB_LOCK:
-        rows = conn.execute(
-            "SELECT msg_id, text, embedding FROM items WHERE chat_id = ?",
-            (chat_id,),
-        ).fetchall()
-    return [(mid, txt, unpack(blob)) for mid, txt, blob in rows]
-
-
-async def upsert(conn: sqlite3.Connection, **kwargs) -> None:
-    """Async wrapper — runs the sync upsert in a worker thread."""
-    await asyncio.to_thread(upsert_sync, conn, **kwargs)
-
-
-async def iter_embeddings(
-    conn: sqlite3.Connection, chat_id: int
-) -> list[tuple[int, str, list[float]]]:
-    """Async wrapper — runs the sync scan in a worker thread."""
-    return await asyncio.to_thread(iter_embeddings_sync, conn, chat_id)

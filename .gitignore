@@ -18,6 +18,7 @@ env/
 .env
 .env.local
 .env.*.local
+config/
 
 # IDE
 .vscode/
@@ -36,6 +37,9 @@ data/
 *.lock
 logs/
 *.log
+
+# Machine-local deployment files
+deploy/
 
 # Editor backups
 *~

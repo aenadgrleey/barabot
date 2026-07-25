@@ -37,10 +37,22 @@ import asyncio
 import logging
 import signal
 import sys
+from collections.abc import Sequence
+from pathlib import Path
 
 from barabot.core.config import Config
 from barabot.core.locks import _acquire_lock, _release_lock, _remove_pid, _write_pid
 from barabot.core.service import Service
+from barabot.core.setup_hints import (
+    PROCESSOR_COMMAND,
+    PROJECT_ROOT,
+    READY_COMMAND,
+    SCRAPER_COMMAND,
+    SETUP_COMMAND,
+    missing_setup_commands,
+    next_setup_command,
+    setup_guidance_commands,
+)
 from barabot.domains.bot import BotService
 from barabot.domains.processor import ProcessorService
 from barabot.domains.scraper import ScraperService
@@ -56,7 +68,7 @@ def _configure_logging(level: str) -> None:
     )
 
 
-def _load_config_or_exit() -> Config:
+def _load_config_or_exit(*, setup_root: Path | None = None) -> Config:
     """Load + validate config, or print+exit on failure.
 
     Single source of truth for the .env read. Both `--check` and the
@@ -68,11 +80,23 @@ def _load_config_or_exit() -> Config:
         return barabot_load()
     except Exception as exc:  # noqa: BLE001
         print(f"config check failed: {exc}", file=sys.stderr)
+        commands = setup_guidance_commands(setup_root or PROJECT_ROOT)
+        if commands:
+            print("missing setup:", file=sys.stderr)
+            for command in commands:
+                print(f"  {command}", file=sys.stderr)
         sys.exit(2)
 
 
 def _check_config() -> int:
     """`run --check`: validate .env, print summary, return exit code."""
+    pending = missing_setup_commands(PROJECT_ROOT)
+    if pending:
+        print("config check failed: setup is incomplete", file=sys.stderr)
+        print("missing setup:", file=sys.stderr)
+        for command in setup_guidance_commands(PROJECT_ROOT):
+            print(f"  {command}", file=sys.stderr)
+        return 2
     cfg = _load_config_or_exit()
     print(
         f"barabot config ok: api_id={cfg.api_id} "
@@ -151,19 +175,94 @@ async def _run_barabot() -> None:
     log.info("barabot stopped cleanly")
 
 
-def main() -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="barabot")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_run = sub.add_parser("run", help="Run scraper + processor + bot services.")
     p_run.add_argument("--check", action="store_true")
 
-    args = parser.parse_args()
+    p_setup = sub.add_parser("setup", help="Configure all missing components.")
+    p_setup.add_argument(
+        "-f", "--force", "--forced", action="store_true", help="Reconfigure components."
+    )
+    p_setup.add_argument(
+        "--headless",
+        action="store_true",
+        help="Configure from environment variables without prompting.",
+    )
+    setup_sub = p_setup.add_subparsers(dest="setup_component")
+    setup_sub.add_parser(
+        "scraper", help="Authorize the Telegram session with OTP/2FA."
+    )
+
+    p_processor = sub.add_parser("processor", help="Manage the processor.")
+    processor_sub = p_processor.add_subparsers(
+        dest="processor_cmd", required=True
+    )
+    processor_sub.add_parser(
+        "configure", help="Configure embedding provider settings."
+    )
+
+    p_bot = sub.add_parser("bot", help="Manage the Telegram bot.")
+    bot_sub = p_bot.add_subparsers(dest="bot_cmd", required=True)
+    p_bot_auth = bot_sub.add_parser("auth", help="Verify and store a BotFather token.")
+    p_bot_auth.add_argument("token", help="BotFather token")
+
+    args = parser.parse_args(argv)
 
     if args.cmd == "run":
         if args.check:
             return _check_config()
         asyncio.run(_run_barabot())
+        return 0
+
+    if args.cmd == "setup":
+        try:
+            if args.setup_component == "scraper":
+                from barabot.core.setup import setup_scraper
+
+                return asyncio.run(setup_scraper(root=PROJECT_ROOT))
+            from barabot.core.setup import setup
+
+            return asyncio.run(
+                setup(root=PROJECT_ROOT, force=args.force, headless=args.headless)
+            )
+        except (KeyboardInterrupt, EOFError):
+            command = SCRAPER_COMMAND if args.setup_component == "scraper" else SETUP_COMMAND
+            print(f"Cancelled; rerun with:\n{command}", file=sys.stderr)
+            return 130
+
+    if args.cmd == "processor" and args.processor_cmd == "configure":
+        from barabot.domains.processor.configure import ConfigurationError, configure
+
+        try:
+            saved_path = configure()
+        except (KeyboardInterrupt, EOFError):
+            print(f"Cancelled; rerun with:\n{PROCESSOR_COMMAND}", file=sys.stderr)
+            return 130
+        except ConfigurationError:
+            print("processor configuration failed", file=sys.stderr)
+            return 1
+        print(f"Processor configuration saved: {saved_path}")
+        expected_path = PROJECT_ROOT / "config" / "processor.env"
+        if saved_path == expected_path:
+            print(f"Next: {next_setup_command(PROJECT_ROOT)}")
+        return 0
+
+    if args.cmd == "bot" and args.bot_cmd == "auth":
+        from barabot.domains.bot.auth import AuthorizationError, authorize
+
+        try:
+            identity = authorize(args.token, Config.bot_token_path)
+        except AuthorizationError:
+            print("bot authorization failed", file=sys.stderr)
+            return 1
+        print(
+            f"Telegram bot authorized: id={identity.id} "
+            f"username=@{identity.username} token_file={Config.bot_token_path}"
+        )
+        print(f"Next: {next_setup_command(PROJECT_ROOT)}")
         return 0
 
     parser.error(f"unknown command: {args.cmd}")

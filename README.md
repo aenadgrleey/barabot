@@ -39,6 +39,9 @@ async def stop() -> None
 ## Что реализовано
 
 - единая точка входа `python -m barabot run`;
+- настройка credentials scraper отдельно от OTP/2FA-авторизации через `python -m barabot setup scraper`;
+- интерактивная настройка processor через `python -m barabot processor configure`;
+- проверка и сохранение BotFather-токена через `python -m barabot bot auth <token>`;
 - проверка конфигурации до запуска event loop;
 - общий lifecycle для scraper, processor и bot;
 - graceful shutdown по `SIGINT` и `SIGTERM`;
@@ -85,7 +88,10 @@ barabot/
         └── model/              # модели сообщений и событий
 
 tests/test_queue.py             # тесты трёх SQLite-очередей
-deploy/barabot.service          # sample systemd unit
+
+config/                         # приватная локальная конфигурация и сессия (не в Git)
+data/                           # локальные БД, lock и PID (не в Git)
+deploy/                         # локальные deploy scripts/units (не в Git)
 ```
 
 ## Требования
@@ -109,7 +115,8 @@ cd barabot
 
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-cp .env.example .env
+mkdir -p config
+cp .env.example config/.env
 ```
 
 Для запуска тестов установи pytest в виртуальное окружение:
@@ -118,33 +125,68 @@ cp .env.example .env
 .venv/bin/pip install pytest
 ```
 
+## Первичная настройка
+
+Запусти единый возобновляемый мастер настройки из корня проекта:
+
+```bash
+.venv/bin/python -m barabot setup
+```
+
+Команда создаёт только отсутствующие локальные файлы, пропускает уже настроенные компоненты и сохраняет scraper credentials, но не запускает Telegram-вход. После остальных шагов она показывает незавершённые команды; OTP/2FA выполняется только отдельной командой `setup scraper`. Офлайн-проверка и сообщение `Setup complete` появляются только когда все артефакты, включая авторизованную сессию, готовы.
+
+### Настройка без терминальных запросов
+
+Для контейнера или CI можно независимо применить любую полную группу переменных:
+
+```bash
+BARABOT_ENV=develop \
+API_ID='<telegram-api-id>' \
+API_HASH='<telegram-api-hash>' \
+OPENAI_API_KEY='<embedding-api-key>' \
+BOT_TOKEN='<botfather-token>' \
+.venv/bin/python -m barabot setup --headless
+```
+
+Группы независимы: `BARABOT_ENV`; пара `API_ID` + `API_HASH`;
+`OPENAI_API_KEY` с необязательными processor-параметрами; `BOT_TOKEN`.
+Полностью отсутствующая группа пропускается, а частичная отклоняется с именем
+недостающей переменной. Поэтому допустимы инкрементальные запуски, например:
+
+```bash
+BARABOT_ENV=prod .venv/bin/python -m barabot setup --headless
+API_ID='<id>' API_HASH='<hash>' .venv/bin/python -m barabot setup --headless
+OPENAI_API_KEY='<key>' .venv/bin/python -m barabot setup --headless
+```
+
+Headless-режим никогда не запускает Telegram-вход и не изменяет
+`config/scraper.session`; `--force` заменяет только явно переданные группы.
+После сохранения credentials выполни OTP/2FA локально: `.venv/bin/python -m
+barabot setup scraper`. Сессия, API-ключи и токены являются секретами: не
+сохраняй их в репозитории и не печатай в CI-логах.
+
 ## Конфигурация
 
-Barabot читает `.env` из корня проекта.
+Приватная конфигурация разделена по назначению:
 
-Обязательные переменные:
-
-```dotenv
-API_ID=123456
-API_HASH=0123456789abcdef0123456789abcdef
-SESSION_STRING=...
-OPENAI_API_KEY=...
+```text
+config/.env              process-wide настройки: BARABOT_ENV, WATCH_CHATS, LOG_LEVEL и reporter
+config/scraper.env       Telegram API_ID и API_HASH
+config/scraper.session   авторизованная Telethon-сессия
+config/processor.env     ключ и параметры embeddings
+config/bot.token         BotFather-токен
 ```
 
-Опциональные переменные и значения по умолчанию:
+При запуске Barabot послойно загружает `config/.env`, `config/scraper.env` и `config/processor.env`. Уже установленные переменные окружения имеют приоритет. Файлы с доменными секретами создают соответствующие команды настройки, поэтому API credentials и параметры embeddings не нужно копировать в `config/.env`.
 
-```dotenv
-WATCH_CHATS=-1001234567890
-SIMILARITY_THRESHOLD=0.85
-EMBEDDING_MODEL=text-embedding-3-small
-EMBEDDING_URL=https://api.openai.com/v1/embeddings
-EMBEDDING_CONCURRENCY=4
-EMBEDDING_RETRIES=3
-EMBEDDING_TIMEOUT=30
-LOG_LEVEL=INFO
+Скопируй публичный шаблон process-wide настроек:
+
+```bash
+mkdir -p config
+cp .env.example config/.env
 ```
 
-`.env` игнорируется Git и не должен попадать в коммиты.
+`BARABOT_ENV` обязателен и принимает ровно два значения: `develop` или `prod`. В `config/.env` также остаются `WATCH_CHATS`, `LOG_LEVEL` и несекретные параметры reporter. Все файлы в `config/` являются приватным локальным состоянием и игнорируются Git.
 
 `WATCH_CHATS` пока сохраняется как переходная настройка. Планируемая модель — таблица пользовательских чатов и дедуплицированный watch-list, вычисляемый самим scraper.
 
@@ -154,19 +196,65 @@ LOG_LEVEL=INFO
 .venv/bin/python -m barabot run --check
 ```
 
-Пример:
+При успешной проверке команда печатает краткую сводку конфигурации. Она проверяет допустимость `BARABOT_ENV`, Telegram API credentials, параметры embeddings, log level и числовые ограничения.
+
+Если настройка не завершена, команда завершается с ошибкой и печатает подходящие команды для отсутствующих файлов, например:
 
 ```text
-barabot config ok: api_id=123456 chats=2 threshold=0.85 log_level=INFO db=/path/to/barabot/data/barabot.sqlite
+missing setup:
+  .venv/bin/python -m barabot setup
+  .venv/bin/python -m barabot setup scraper
+  .venv/bin/python -m barabot processor configure
+  .venv/bin/python -m barabot bot auth <token>
 ```
 
-Команда проверяет:
+Проверка полностью офлайн: `run --check` только загружает слои конфигурации и проверяет локальные значения. Она не создаёт Telegram-клиент и не обращается к сети.
 
-- наличие обязательных переменных;
-- формат `API_HASH`;
-- диапазон similarity threshold;
-- log level;
-- параметры concurrency, retries и timeout.
+## Вход в Telegram для scraper
+
+Выполни одну команду:
+
+```bash
+.venv/bin/python -m barabot setup scraper
+```
+
+Для этой команды не нужна готовая process-wide конфигурация. Она использует сохранённый `config/scraper.env`; если credentials отсутствуют или некорректны, команда запросит `Telegram API_ID` и скрыто запросит `Telegram API_HASH`, проверит их формат и сохранит файл с правами `0600`. Затем Telethon запросит номер телефона, код подтверждения и, если включена двухэтапная аутентификация, пароль.
+
+Успешный вход создаёт два приватных файла:
+
+- `config/scraper.env` — `API_ID` и `API_HASH`;
+- `config/scraper.session` — постоянная авторизованная Telethon-сессия.
+
+При повторном запуске команда использует сохранённые credentials. Сессию и credentials нельзя публиковать или добавлять в Git.
+
+## Настройка processor
+
+```bash
+.venv/bin/python -m barabot processor configure
+```
+
+Команда не загружает process-wide `Config`. Она скрыто запрашивает обязательный `OPENAI_API_KEY`, а затем предлагает значения для остальных параметров; Enter принимает значение в квадратных скобках:
+
+```text
+EMBEDDING_MODEL [text-embedding-3-small]
+EMBEDDING_URL [https://api.openai.com/v1/embeddings]
+SIMILARITY_THRESHOLD [0.85]
+EMBEDDING_CONCURRENCY [4]
+EMBEDDING_RETRIES [3]
+EMBEDDING_TIMEOUT [30]
+```
+
+После валидации команда атомарно записывает `config/processor.env` с правами `0600`. Повторный запуск заменяет этот файл целиком.
+
+## Авторизация Telegram-бота
+
+Получи токен у BotFather и передай его обязательным аргументом:
+
+```bash
+.venv/bin/python -m barabot bot auth <token>
+```
+
+Команда проверяет токен методом Bot API `getMe`, затем атомарно записывает только его исходное значение в `config/bot.token` с правами `0600`. При ошибке проверки существующий файл токена остаётся без изменений. Токен не выводится; команда показывает только id/username бота и путь к файлу.
 
 ## Запуск
 
@@ -245,34 +333,9 @@ sqlite3 data/barabot.sqlite \
    UNION ALL SELECT 'commands', count(*) FROM command_queue;"
 ```
 
-## systemd
+## Развёртывание
 
-В `deploy/barabot.service` лежит пример unit-файла. Перед установкой обязательно проверь:
-
-- `User=`;
-- `WorkingDirectory=`;
-- пути к `.venv`;
-- `ReadWritePaths=`;
-- команды запуска: актуальный CLI требует подкоманду `run`.
-
-Рекомендуемые команды внутри unit:
-
-```ini
-ExecStartPre=/path/to/barabot/.venv/bin/python -m barabot run --check
-ExecStart=/path/to/barabot/.venv/bin/python -m barabot run
-```
-
-После адаптации:
-
-```bash
-sudo cp deploy/barabot.service /etc/systemd/system/barabot.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now barabot.service
-systemctl status barabot.service
-journalctl -u barabot.service -f
-```
-
-Сервис пока не следует включать как production-бот: доменные сервисы ещё являются заглушками.
+Каталог `deploy/` является локальным и игнорируется Git вместе с `config/` и `data/`. Локальные scripts/units должны вызывать актуальный CLI: сначала `python -m barabot run --check`, затем `python -m barabot run`. Сервис пока не следует включать как production-бот: доменные сервисы ещё являются заглушками.
 
 ## Ближайший этап
 
@@ -290,11 +353,14 @@ journalctl -u barabot.service -f
 
 ## Безопасность репозитория
 
+Репозиторий содержит публичный код и безопасный шаблон `.env.example`. Приватное и машинно-зависимое состояние остаётся только локально в игнорируемых каталогах `config/`, `data/` и `deploy/`.
+
 Не коммитить:
 
-- `.env` и Telegram session string;
+- `config/.env`, `config/scraper.env`, `config/scraper.session`, `config/processor.env` и `config/bot.token`;
 - API keys;
 - `data/*.sqlite`, WAL/SHM и lock-файлы;
+- локальные deploy scripts/units;
 - `.venv/`;
 - `__pycache__/` и pytest cache.
 

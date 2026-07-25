@@ -1,18 +1,24 @@
-"""Config loading. Reads .env from the project root."""
+"""Process-wide configuration loaded from layered private env files."""
 from __future__ import annotations
 
 import os
 import re
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
+from typing import ClassVar
 
 from dotenv import load_dotenv
 
 # barabot/core/config.py → barabot/core → barabot → <project>
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-load_dotenv(PROJECT_ROOT / ".env")
 
 _VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+
+
+class DeployEnvironment(Enum):
+    develop = "develop"
+    prod = "prod"
 
 
 def _required(name: str) -> str:
@@ -43,9 +49,11 @@ def _list(name: str) -> list[int]:
 
 @dataclass(frozen=True)
 class Config:
+    bot_token_path: ClassVar[Path] = PROJECT_ROOT / "config" / "bot.token"
+
+    environment: DeployEnvironment
     api_id: int
     api_hash: str
-    session_string: str
     openai_api_key: str
     embedding_model: str
     embedding_url: str
@@ -56,6 +64,9 @@ class Config:
     embedding_retries: int
     embedding_timeout: int
 
+    scraper_session_path: Path = field(
+        default_factory=lambda: PROJECT_ROOT / "config" / "scraper.session"
+    )
     db_path: Path = field(default_factory=lambda: PROJECT_ROOT / "data" / "barabot.sqlite")
     lock_path: Path = field(default_factory=lambda: PROJECT_ROOT / "data" / "barabot.lock")
     pid_path: Path = field(default_factory=lambda: PROJECT_ROOT / "data" / "barabot.pid")
@@ -74,6 +85,24 @@ def _validate_threshold(value: float) -> None:
 
 
 def load() -> Config:
+    load_dotenv(PROJECT_ROOT / "config" / "scraper.env", override=False)
+    load_dotenv(PROJECT_ROOT / "config" / "processor.env", override=False)
+    load_dotenv(PROJECT_ROOT / "config" / ".env", override=False)
+
+    raw_environment = os.getenv("BARABOT_ENV", "").strip()
+    accepted_environments = "develop, prod"
+    if not raw_environment:
+        raise RuntimeError(
+            f"BARABOT_ENV is missing; accepted values: {accepted_environments}"
+        )
+    try:
+        environment = DeployEnvironment(raw_environment)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"BARABOT_ENV has invalid value {raw_environment!r}; "
+            f"accepted values: {accepted_environments}"
+        ) from exc
+
     api_hash = _required("API_HASH")
     _validate_api_hash(api_hash)
     threshold = _float("SIMILARITY_THRESHOLD", 0.85)
@@ -94,9 +123,9 @@ def load() -> Config:
         raise RuntimeError("EMBEDDING_TIMEOUT must be >= 1")
 
     return Config(
+        environment=environment,
         api_id=int(_required("API_ID")),
         api_hash=api_hash,
-        session_string=_required("SESSION_STRING"),
         openai_api_key=_required("OPENAI_API_KEY"),
         embedding_model=os.getenv("EMBEDDING_MODEL", "text-embedding-3-small"),
         embedding_url=os.getenv("EMBEDDING_URL", "https://api.openai.com/v1/embeddings"),
