@@ -30,6 +30,7 @@ Lifecycle:
   - Finally: every started service's `stop()` runs, in reverse order,
     regardless of whether we exited cleanly or by exception.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -76,6 +77,7 @@ def _load_config_or_exit(*, setup_root: Path | None = None) -> Config:
     one set of error messages.
     """
     from barabot.core.config import load as barabot_load
+
     try:
         return barabot_load()
     except Exception as exc:  # noqa: BLE001
@@ -101,7 +103,7 @@ def _check_config() -> int:
     print(
         f"barabot config ok: api_id={cfg.api_id} "
         f"chats={len(cfg.watch_chats)} threshold={cfg.similarity_threshold} "
-        f"log_level={cfg.log_level} db={cfg.db_path}"
+        f"log_level={cfg.log_level}"
     )
     return 0
 
@@ -110,7 +112,7 @@ def _build_services(cfg: Config) -> list[Service]:
     """Construct all services. Add a new domain by adding one line here."""
     return [
         ScraperService(cfg),
-        ProcessorService(cfg, conn=None),
+        ProcessorService(cfg),
         BotService(cfg, client=None),
     ]
 
@@ -153,10 +155,9 @@ async def _run_barabot() -> None:
             loop.add_signal_handler(sig, _request_stop, sig)
 
         log.info(
-            "barabot up (skeleton): %d service(s), watching %d chat(s), db=%s",
+            "barabot up (skeleton): %d service(s), watching %d chat(s)",
             len(services),
             len(cfg.watch_chats),
-            cfg.db_path,
         )
         async with asyncio.TaskGroup() as tg:
             for svc in services:
@@ -192,17 +193,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Configure from environment variables without prompting.",
     )
     setup_sub = p_setup.add_subparsers(dest="setup_component")
-    setup_sub.add_parser(
-        "scraper", help="Authorize the Telegram session with OTP/2FA."
-    )
+    setup_sub.add_parser("scraper", help="Authorize the Telegram session with OTP/2FA.")
 
     p_processor = sub.add_parser("processor", help="Manage the processor.")
-    processor_sub = p_processor.add_subparsers(
-        dest="processor_cmd", required=True
-    )
-    processor_sub.add_parser(
-        "configure", help="Configure embedding provider settings."
-    )
+    processor_sub = p_processor.add_subparsers(dest="processor_cmd", required=True)
+    processor_sub.add_parser("configure", help="Configure embedding provider settings.")
 
     p_bot = sub.add_parser("bot", help="Manage the Telegram bot.")
     bot_sub = p_bot.add_subparsers(dest="bot_cmd", required=True)
@@ -229,7 +224,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 setup(root=PROJECT_ROOT, force=args.force, headless=args.headless)
             )
         except (KeyboardInterrupt, EOFError):
-            command = SCRAPER_COMMAND if args.setup_component == "scraper" else SETUP_COMMAND
+            command = (
+                SCRAPER_COMMAND if args.setup_component == "scraper" else SETUP_COMMAND
+            )
             print(f"Cancelled; rerun with:\n{command}", file=sys.stderr)
             return 130
 

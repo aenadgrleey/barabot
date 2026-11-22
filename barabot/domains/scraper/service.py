@@ -3,12 +3,18 @@ from __future__ import annotations
 
 import asyncio
 
+from telethon import TelegramClient
+
+from barabot.core.config import Config
 from barabot.core.service import Service
+from barabot.domains.scraper.source.source import Source
 
 
-class ScraperService:
-    def __init__(self, cfg) -> None:
+class ScraperService(Service):
+    def __init__(self, cfg: Config, sources: tuple[Source, ...], dispatcher: ) -> None:
         self.cfg = cfg
+        self.sources = sources
+
 
     async def start(self) -> None:
         pass

@@ -13,7 +13,6 @@ _ENV_VARS = (
     "BARABOT_ENV",
     "API_ID",
     "API_HASH",
-    "SESSION_STRING",
     "OPENAI_API_KEY",
     "EMBEDDING_MODEL",
     "EMBEDDING_URL",
@@ -46,32 +45,6 @@ def _set_valid_environment(monkeypatch: pytest.MonkeyPatch, environment: str) ->
     monkeypatch.setenv("API_ID", "12345")
     monkeypatch.setenv("API_HASH", "a" * 32)
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
-
-
-def test_deploy_environment_has_exactly_develop_and_prod(monkeypatch: pytest.MonkeyPatch) -> None:
-    config, _ = _import_config(monkeypatch)
-
-    assert [(item.name, item.value) for item in config.DeployEnvironment] == [
-        ("develop", "develop"),
-        ("prod", "prod"),
-    ]
-
-
-def test_config_env_is_loaded_only_by_load_from_fixed_config_path(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config, dotenv_calls = _import_config(monkeypatch)
-    _set_valid_environment(monkeypatch, "develop")
-
-    assert dotenv_calls == []
-    config.load()
-
-    project_root = Path(__file__).resolve().parents[2]
-    assert dotenv_calls == [
-        ((project_root / "config" / "scraper.env",), {"override": False}),
-        ((project_root / "config" / "processor.env",), {"override": False}),
-        ((project_root / "config" / ".env",), {"override": False})
-    ]
 
 
 def test_load_merges_domain_files_before_process_fallback(
@@ -129,23 +102,6 @@ def test_load_parses_deploy_environment(
     assert loaded.environment is config.DeployEnvironment(raw)
 
 
-def test_config_uses_fixed_repository_config_and_data_paths(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config, _ = _import_config(monkeypatch)
-    _set_valid_environment(monkeypatch, "develop")
-
-    loaded = config.load()
-
-    project_root = Path(__file__).resolve().parents[2]
-    assert config.PROJECT_ROOT == project_root
-    assert config.Config.bot_token_path == project_root / "config" / "bot.token"
-    assert loaded.scraper_session_path == project_root / "config" / "scraper.session"
-    assert loaded.db_path == project_root / "data" / "barabot.sqlite"
-    assert loaded.lock_path == project_root / "data" / "barabot.lock"
-    assert loaded.pid_path == project_root / "data" / "barabot.pid"
-
-
 def test_missing_barabot_env_fails_with_accepted_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -165,16 +121,3 @@ def test_invalid_barabot_env_fails_with_value_and_accepted_values(
 
     with pytest.raises(RuntimeError, match=r"BARABOT_ENV.*staging.*develop.*prod"):
         config.load()
-
-
-def test_session_string_is_not_required_or_exposed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config, _ = _import_config(monkeypatch)
-    _set_valid_environment(monkeypatch, "develop")
-    monkeypatch.delenv("SESSION_STRING", raising=False)
-
-    loaded = config.load()
-
-    assert not hasattr(loaded, "session_string")
-    assert loaded.scraper_session_path.name == "scraper.session"

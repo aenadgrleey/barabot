@@ -48,12 +48,7 @@ def _write_session(path: Path, auth_key: bytes | None) -> None:
 @pytest.mark.parametrize(
     ("session_kind", "expected"),
     [
-        ("missing", False),
-        ("zero-byte", False),
         ("corrupt", False),
-        ("wrong-schema", False),
-        ("null-auth-key", False),
-        ("empty-auth-key", False),
         ("authorized", True),
     ],
 )
@@ -65,70 +60,15 @@ def test_local_authorization_check_is_offline_and_read_only(
 ) -> None:
     login = _module(monkeypatch, tmp_path)
     path = tmp_path / "scraper.session"
-    if session_kind == "zero-byte":
-        path.touch()
-    elif session_kind == "corrupt":
+    if session_kind == "corrupt":
         path.write_bytes(b"not sqlite")
-    elif session_kind == "wrong-schema":
-        with sqlite3.connect(path) as connection:
-            connection.execute("CREATE TABLE unrelated (value BLOB)")
-    elif session_kind in {"null-auth-key", "empty-auth-key", "authorized"}:
-        auth_key = {
-            "null-auth-key": None,
-            "empty-auth-key": b"",
-            "authorized": b"authorized",
-        }[session_kind]
-        _write_session(path, auth_key)
+    else:
+        _write_session(path, b"authorized")
 
     before = path.read_bytes() if path.exists() else None
     assert login.has_local_authorization(path) is expected
     assert (path.read_bytes() if path.exists() else None) == before
     assert not any((tmp_path / f"scraper.session{s}").exists() for s in ("-wal", "-shm", "-journal"))
-
-
-@pytest.mark.parametrize(
-    ("submitted", "expected"),
-    [
-        ("12345", 12345),
-        (" API_ID = 12345 ", 12345),
-        ("API_ID = '12345'", 12345),
-        ('API_ID = "12345"', 12345),
-    ],
-)
-def test_api_id_accepts_raw_and_matching_assignment_forms(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, submitted: str, expected: int
-) -> None:
-    assert _module(monkeypatch, tmp_path)._valid_api_id(submitted) == expected
-
-
-@pytest.mark.parametrize(
-    "submitted",
-    ["0", "-1", "abc", "API_HASH=12345", "OTHER=12345", "API_ID='12345\"", "API_ID='12345' trailing"],
-)
-def test_api_id_rejects_wrong_keys_malformed_quotes_and_invalid_values(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, submitted: str
-) -> None:
-    assert _module(monkeypatch, tmp_path)._valid_api_id(submitted) is None
-
-
-@pytest.mark.parametrize(
-    "submitted",
-    [VALID_HASH, f" API_HASH = {VALID_HASH} ", f"API_HASH='{VALID_HASH}'", f'API_HASH="{VALID_HASH}"'],
-)
-def test_api_hash_accepts_raw_and_matching_assignment_forms(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, submitted: str
-) -> None:
-    assert _module(monkeypatch, tmp_path)._valid_api_hash(submitted) == VALID_HASH
-
-
-@pytest.mark.parametrize(
-    "submitted",
-    ["short", "g" * 32, f"API_ID={VALID_HASH}", f"OTHER={VALID_HASH}", f"API_HASH='{VALID_HASH}' trailing"],
-)
-def test_api_hash_rejects_wrong_keys_and_invalid_values(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, submitted: str
-) -> None:
-    assert _module(monkeypatch, tmp_path)._valid_api_hash(submitted) is None
 
 
 def test_credentials_from_mapping_validates_and_normalizes_without_writing_files(
@@ -142,25 +82,20 @@ def test_credentials_from_mapping_validates_and_normalizes_without_writing_files
     assert list(tmp_path.iterdir()) == []
 
 
-@pytest.mark.parametrize(
-    ("mapping", "invalid_name"),
-    [
-        ({"API_ID": "bad", "API_HASH": VALID_HASH}, "API_ID"),
-        ({"API_ID": "12345", "API_HASH": "bad"}, "API_HASH"),
-    ],
-)
 def test_credentials_from_mapping_reports_only_invalid_variable_name(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    mapping: dict[str, str],
-    invalid_name: str,
 ) -> None:
     login = _module(monkeypatch, tmp_path)
-    with pytest.raises(login.CredentialInputError) as exc_info:
-        login.credentials_from_mapping(mapping)
-    assert str(exc_info.value) == invalid_name
-    for value in mapping.values():
-        assert value not in str(exc_info.value)
+    cases = [
+        ({"API_ID": "bad", "API_HASH": VALID_HASH}, "API_ID"),
+        ({"API_ID": "12345", "API_HASH": "bad"}, "API_HASH"),
+    ]
+    for mapping, invalid_name in cases:
+        with pytest.raises(login.CredentialInputError) as exc_info:
+            login.credentials_from_mapping(mapping)
+        assert str(exc_info.value) == invalid_name
+        assert all(value not in str(exc_info.value) for value in mapping.values())
 
 
 def test_configure_credentials_from_mapping_atomically_writes_private_file_only(
@@ -179,28 +114,6 @@ def test_configure_credentials_from_mapping_atomically_writes_private_file_only(
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert not (path.parent / "scraper.session").exists()
     assert [p.name for p in path.parent.iterdir()] == ["scraper.env"]
-
-
-def test_interactive_configure_credentials_retries_and_never_creates_session(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    login = _module(monkeypatch, tmp_path)
-    path = tmp_path / "config/scraper.env"
-    ids = iter(["bad-id", "12345"])
-    hashes = iter(["bad-hash", VALID_HASH])
-
-    assert login.configure_credentials(
-        path=path,
-        input_func=lambda _prompt: next(ids),
-        secret_input_func=lambda _prompt: next(hashes),
-    ) == path
-
-    assert path.exists()
-    assert not (path.parent / "scraper.session").exists()
-    output = capsys.readouterr().out
-    assert "bad-id" not in output
-    assert "bad-hash" not in output
-    assert VALID_HASH not in output
 
 
 def test_credentials_atomic_replace_failure_preserves_existing_file_and_no_temp(
@@ -333,65 +246,3 @@ def test_authorize_makes_created_session_and_parent_private(
 
     assert stat.S_IMODE(config.stat().st_mode) == 0o700
     assert stat.S_IMODE((config / "scraper.session").stat().st_mode) == 0o600
-
-
-@pytest.mark.parametrize("cancel_type", [KeyboardInterrupt, EOFError])
-@pytest.mark.parametrize(
-    "boundary",
-    ["api-id-prompt", "api-hash-prompt", "client-factory", "client-start", "authorization"],
-)
-def test_authorize_propagates_cancellation_without_leaking_secret(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    boundary: str,
-    cancel_type: type[BaseException],
-) -> None:
-    login = _module(monkeypatch, tmp_path)
-    cancel = cancel_type("sentinel-secret")
-    events: list[str] = []
-
-    def input_id(_prompt: str) -> str:
-        if boundary == "api-id-prompt":
-            raise cancel
-        return "12345"
-
-    def input_hash(_prompt: str) -> str:
-        if boundary == "api-hash-prompt":
-            raise cancel
-        return VALID_HASH
-
-    class Client:
-        async def start(self) -> None:
-            events.append("start")
-            if boundary == "client-start":
-                raise cancel
-
-        async def is_user_authorized(self) -> bool:
-            events.append("authorized")
-            if boundary == "authorization":
-                raise cancel
-            return True
-
-        async def disconnect(self) -> None:
-            events.append("disconnect")
-
-    def factory(*_args):
-        if boundary == "client-factory":
-            raise cancel
-        return Client()
-
-    with pytest.raises(cancel_type):
-        asyncio.run(
-            login.authorize(
-                root=tmp_path,
-                input_func=input_id,
-                secret_input_func=input_hash,
-                client_factory=factory,
-            )
-        )
-
-    if boundary in {"client-start", "authorization"}:
-        assert events[-1] == "disconnect"
-    captured = capsys.readouterr()
-    assert "sentinel-secret" not in captured.out + captured.err

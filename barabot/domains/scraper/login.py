@@ -1,4 +1,5 @@
 """Telegram scraper credentials and interactive session authorization."""
+
 from __future__ import annotations
 
 import getpass
@@ -109,7 +110,9 @@ def _prompt_credentials(
 
     for _attempt in range(3):
         api_hash = _valid_api_hash(
-            secret_input_func("Telegram API_HASH (input hidden; paste, then press Enter): ")
+            secret_input_func(
+                "Telegram API_HASH (input hidden; paste, then press Enter): "
+            )
         )
         if api_hash is not None:
             break
@@ -123,7 +126,9 @@ def _write_credentials(path: Path, api_id: int, api_hash: str) -> None:
     """Atomically replace the credentials file with private permissions."""
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     path.parent.chmod(0o700)
-    descriptor, temporary_name = tempfile.mkstemp(prefix=".scraper.env.", dir=path.parent)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".scraper.env.", dir=path.parent
+    )
     temporary_path = Path(temporary_name)
     try:
         os.fchmod(descriptor, 0o600)
