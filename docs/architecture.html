@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Barabot architecture</title>
+<style>
+  :root {
+    --fg: var(--foreground, #1b1b1f);
+    --muted: var(--muted-foreground, #62646c);
+    --line: var(--border, #d9dae0);
+    --panel: var(--card, #ffffff);
+    --sunk: var(--surface-recessed, #f3f4f6);
+    --accent: var(--brand, #2f6fde);
+    --warn: var(--warning-text, #a15c00);
+    --r: var(--radius, 8px);
+    --mono: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  }
+  body { font-family: var(--font-sans, system-ui, sans-serif); color: var(--fg); line-height: 1.55; margin: 0; }
+  main { max-width: 860px; margin: 0 auto; padding: 32px 48px 56px; }
+  @media (max-width: 640px) { main { padding: 20px 20px 40px; } }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 17px; margin: 32px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  p, li { font-size: 14px; }
+  .status { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+  .spike { color: var(--warn); font-weight: 600; font-size: 12px; }
+  code { font-family: var(--mono); font-size: 12.5px; background: var(--sunk); padding: 1px 4px; border-radius: 4px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; margin: 8px 0; }
+  th, td { text-align: left; vertical-align: top; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; }
+  ol, ul { padding-left: 22px; }
+  .note { background: var(--sunk); border-radius: var(--r); padding: 12px 16px; font-size: 13px; margin: 12px 0; }
+  .note p { margin: 4px 0; font-size: 13px; }
+  svg { display: block; width: 100%; height: auto; margin: 8px 0 4px; font-family: var(--font-sans, system-ui, sans-serif); font-size: 12px; }
+  svg .box { fill: var(--panel); stroke: var(--line); }
+  svg .ext { fill: var(--sunk); stroke: var(--line); }
+  svg .hot { fill: var(--panel); stroke: var(--accent); stroke-width: 1.5; }
+  svg .t { fill: var(--fg); }
+  svg .h { fill: var(--fg); font-weight: 600; }
+  svg .m { fill: var(--muted); font-size: 11px; }
+  svg .c { fill: var(--accent); font-family: var(--mono); font-size: 10.5px; }
+  svg .l { stroke: var(--muted); fill: none; marker-end: url(#a); }
+  svg .lb { stroke: var(--accent); fill: none; stroke-width: 1.5; marker-end: url(#b); }
+  svg .frame { fill: none; stroke: var(--line); stroke-dasharray: 6 4; }
+  .legend { color: var(--muted); font-size: 12px; margin: 0 0 8px; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Barabot architecture</h1>
+<p class="status">This is the agreed design, not implemented yet. We checked DBOS behavior in a spike on DBOS 3.6.0 with SQLite, summarized in "DBOS findings" below.</p>
+
+<h2>Diagram</h2>
+<svg viewBox="0 0 700 540" role="img" aria-label="Barabot components and data flow">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="var(--muted)"/></marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="var(--accent)"/></marker>
+  </defs>
+  <rect class="ext" x="20" y="10" width="200" height="34" rx="6"/><text class="t" x="120" y="32" text-anchor="middle">Telegram account</text>
+  <rect class="ext" x="480" y="10" width="200" height="34" rx="6"/><text class="t" x="580" y="32" text-anchor="middle">Telegram Bot API</text>
+
+  <rect class="box" x="20" y="66" width="290" height="114" rx="6"/>
+  <text class="h" x="34" y="86">ScraperService, event handler</text>
+  <text class="m" x="34" y="106">1. upsert messages, rev += 1 (one transaction)</text>
+  <text class="m" x="34" y="124">2. cancel</text><text class="c" x="88" y="124">listing:{key}:{rev-1}</text>
+  <text class="m" x="34" y="142">3. enqueue</text><text class="c" x="95" y="142">listing:{key}:{rev}</text>
+  <text class="m" x="34" y="160">    with delay 3 s</text>
+
+  <rect class="ext" x="325" y="10" width="130" height="34" rx="6"/><text class="t" x="390" y="32" text-anchor="middle">Mini App page</text>
+  <rect class="box" x="325" y="66" width="130" height="60" rx="6"/>
+  <text class="h" x="339" y="88">MiniAppService</text><text class="m" x="339" y="108">HTTP, /api/*</text>
+  <rect class="box" x="480" y="66" width="200" height="60" rx="6"/>
+  <text class="h" x="494" y="88">BotService</text><text class="m" x="494" y="108">router: commands or agent</text>
+  <rect class="hot" x="480" y="148" width="200" height="40" rx="6" style="stroke-dasharray:4 3"/>
+  <text class="h" x="494" y="166">bot/runtime.py</text><text class="m" x="494" y="181">client</text>
+
+  <rect class="frame" x="10" y="206" width="680" height="246" rx="8"/><text class="m" x="22" y="223">DBOS, data/dbos.sqlite</text>
+
+  <rect class="box" x="50" y="232" width="285" height="204" rx="6"/>
+  <text class="h" x="64" y="252">process_listing(key)</text><text class="c" x="64" y="268">id listing:{key}:{rev}</text>
+  <text class="m" x="64" y="290">1. assemble from messages, hash</text>
+  <text class="m" x="64" y="308">2. save version (compare-and-set)</text>
+  <text class="m" x="64" y="326">3. embedding via queue</text>
+  <text class="m" x="64" y="344">4. route:</text>
+  <text class="m" x="76" y="360">matches, never sent → new</text>
+  <text class="m" x="76" y="374">matches, sent → updated</text>
+  <text class="m" x="76" y="388">no match, sent → unmatched</text>
+  <text class="m" x="76" y="402">deleted, sent → removed</text>
+  <text class="m" x="64" y="420">5. enqueue bot.notify per event</text>
+
+  <rect class="hot" x="345" y="300" width="105" height="48" rx="6"/>
+  <text class="h" x="397" y="320" text-anchor="middle">notify_queue</text><text class="m" x="397" y="337" text-anchor="middle">send rate limit</text>
+
+  <rect class="hot" x="480" y="232" width="195" height="130" rx="6"/>
+  <text class="h" x="494" y="252">bot.notify(user, kind, key, v)</text><text class="c" x="494" y="268">id notify:{key}:{rev}:{user}</text>
+  <text class="m" x="494" y="290">1. version still latest?</text>
+  <text class="m" x="494" y="308">2. new: send</text>
+  <text class="m" x="494" y="324">    updated: silent edit</text>
+  <text class="m" x="494" y="340">    unmatched / removed: notify</text>
+  <text class="m" x="494" y="356">    + write delivery, same step</text>
+
+  <rect class="box" x="20" y="482" width="150" height="40" rx="6"/><text class="t" x="95" y="507" text-anchor="middle">messages</text>
+  <rect class="box" x="190" y="482" width="150" height="40" rx="6"/><text class="t" x="265" y="507" text-anchor="middle">listings</text>
+  <rect class="box" x="360" y="482" width="150" height="40" rx="6"/><text class="t" x="435" y="507" text-anchor="middle">subscriptions</text>
+  <rect class="box" x="530" y="482" width="150" height="40" rx="6"/><text class="t" x="605" y="507" text-anchor="middle">deliveries</text>
+
+  <path class="l" d="M120,44V64"/>
+  <path class="l" d="M32,180V480"/>
+  <path class="l" d="M200,180V230"/>
+  <path class="l" d="M100,436V480"/>
+  <path class="l" d="M240,436L258,480"/>
+  <path class="l" d="M300,436L400,480"/>
+  <path class="l" d="M335,420C430,430 540,440 580,480"/>
+  <path class="lb" d="M335,324H343"/>
+  <path class="lb" d="M450,324H478"/>
+  <path class="l" d="M580,44V64"/>
+  <path class="l" d="M390,44V64"/>
+  <path class="l" d="M455,110H466" style="marker-end:none"/>
+  <path class="l" d="M520,126V146"/>
+  <path class="lb" d="M620,232V190" style="stroke-dasharray:4 3"/>
+  <path class="lb" d="M680,168H692V27H682"/>
+  <path class="l" d="M480,96H466V480"/><text class="m" x="430" y="200">writes</text>
+  <path class="l" d="M640,362V480"/>
+</svg>
+<p class="legend">Blue arrows show the notification path. Dashed blue means the step gets the live bot client from <code>bot/runtime.py</code>. The Mini App and the bot call the same functions to write <code>subscriptions</code>, so their arrows merge. Arrows pointing into tables are writes. Arrows from <code>process_listing</code> to tables are reads, except when it writes the version into <code>listings</code>.</p>
+
+<h2>Components</h2>
+<p>Barabot runs in one process on a single <code>asyncio</code> event loop. Three services handle outside traffic, and DBOS runs background processing.</p>
+<p><code>__main__</code> starts DBOS first, then starts the three services. On shutdown, it stops them in reverse order.</p>
+<table>
+  <tr><th>Component</th><th>Kind</th><th>Owns</th></tr>
+  <tr><td><code>ScraperService</code></td><td>Service</td><td>Telegram user connection via tgmux or Telethon, event handlers, startup backfill</td></tr>
+  <tr><td><code>BotService</code></td><td>Service</td><td>Bot API connection, message router, command and agent modes, subscription functions</td></tr>
+  <tr><td><code>MiniAppService</code></td><td>Service</td><td>HTTP server for the Telegram Mini App, serving the static page and <code>/api/*</code></td></tr>
+  <tr><td>DBOS</td><td>Infrastructure</td><td>Workflow state in its own SQLite database at <code>data/dbos.sqlite</code>. We use SQLite in production too because load is small.</td></tr>
+  <tr><td>Processing</td><td>DBOS workflows and steps</td><td>Listing assembly, embeddings, and notification routing</td></tr>
+</table>
+<p>The processor is no longer a service. Its logic now lives in DBOS workflow steps and an embedding queue. The three services never call each other directly. They meet only through DBOS and the database.</p>
+
+<h2>Database tables</h2>
+<p>Application data lives in SQLite at <code>data/barabot.sqlite</code>. DBOS keeps its own system database separate.</p>
+<table>
+  <tr><th>Table</th><th>Written by</th><th>Read by</th><th>What each row stores</th></tr>
+  <tr><td><code>messages</code></td><td>Scraper</td><td>Processing</td><td>One Telegram message: <code>chat_id</code>, <code>msg_id</code>, <code>grouped_id</code>, <code>sender_id</code>, <code>date</code>, <code>text</code>, <code>media</code>, <code>deleted</code></td></tr>
+  <tr><td><code>listings</code></td><td>Scraper writes <code>rev</code>. Processing writes content and <code>version</code>.</td><td>Processing, bot</td><td>One listing: key, <code>rev</code>, assembled text and media, content hash, <code>version</code>, removed flag</td></tr>
+  <tr><td><code>subscriptions</code></td><td>Bot</td><td>Processing</td><td>One user search subscription</td></tr>
+  <tr><td><code>deliveries</code></td><td>Bot</td><td>Processing</td><td>What the bot sent to a user: <code>listing_key</code>, <code>user_id</code>, <code>version</code>, <code>bot_message_id</code></td></tr>
+</table>
+<p>Every listing has a stable key. For an album, the key is <code>(chat_id, grouped_id)</code>. For a single message, it is <code>(chat_id, msg_id)</code>. The key does not depend on which messages of the album are still alive, so deleting the first photo does not move the listing.</p>
+
+<h2>Ingesting Telegram events</h2>
+<p>The scraper writes raw Telegram updates to the database and schedules processing. Live <code>NewMessage</code>, <code>MessageEdited</code>, and <code>MessageDeleted</code> events go through the same handler as startup backfill pages.</p>
+<ol>
+  <li><strong>Save and bump revision.</strong> In one transaction, upsert the row in <code>messages</code> and increment <code>rev</code> on its listing with <code>INSERT INTO listings ... ON CONFLICT DO UPDATE SET rev = rev + 1 RETURNING rev</code>. Delete events carry no <code>grouped_id</code>, so the handler looks up the listing key from the stored message row.</li>
+  <li><strong>Cancel the previous run.</strong> Call <code>await DBOS.cancel_workflow_async("listing:{key}:{rev-1}", cancel_children=True)</code>. That flag also cancels any <code>bot.notify</code> runs from the old revision.</li>
+  <li><strong>Schedule the new run.</strong> Call <code>await listings_q.enqueue_async(process_listing, key)</code> with <code>SetWorkflowID("listing:{key}:{rev}")</code> and <code>SetEnqueueOptions(delay_seconds=3)</code>.</li>
+</ol>
+<p>Steps 2 and 3 work together as a debounce. Every new event cancels the previous run, whether it is still waiting for its 3-second delay or already running, and schedules a new one. For example, a three-photo album bumps the revision to 1, 2, and 3, and only <code>listing:{key}:3</code> runs.</p>
+<div class="note">
+  <p><strong>Why we do not use DBOS <code>Debouncer</code>.</strong> In DBOS 3.6.0, it keeps the workflow ID of the first call in a burst and drops the IDs of later calls. The handler would have no way to compute which run to cancel.</p>
+  <p><strong>Why the ID includes the revision.</strong> With the default <code>return-existing</code> policy, DBOS returns the existing workflow for any known ID, even a finished one, and starts nothing new.</p>
+</div>
+<p><strong>Known gaps</strong></p>
+<ul>
+  <li><strong>No cap on wait time.</strong> A listing edited continuously is postponed indefinitely. If this shows up in practice, add a <code>first_touched_at</code> cap.</li>
+  <li><strong>Crash between step 1 and step 3.</strong> If the process dies before enqueueing, the listing waits for its next event. Startup backfill re-touches recent messages.</li>
+  <li><strong>Deletes in basic groups and private chats.</strong> These delete events arrive without a chat ID. Their <code>msg_id</code> is unique per account, so the stored message row still resolves them. tgmux resolves the chat from its own <code>msg_id</code> table and delivers each delete only to the chat owner (branch <code>feat/route-deletes</code>, not merged yet). Deletes of messages tgmux never saw or saw more than 30 days ago are dropped.</li>
+</ul>
+
+<h2>Workflow <code>process_listing(key)</code></h2>
+<p>This workflow turns saved Telegram messages into a listing, generates its embedding, and decides who should be notified. Each numbered item is a DBOS step. Steps run at least once, so each step is idempotent.</p>
+<ol>
+  <li><strong>Assemble and hash.</strong> Read live rows from <code>messages</code>, join captions in <code>msg_id</code> order, and collect media. Compute the content hash. If the hash has not changed, stop.</li>
+  <li><strong>Save the new version.</strong> Write the new content and increment <code>version</code> using compare-and-set with <code>WHERE version = :seen</code>. If no live rows remain, mark the listing as removed.</li>
+  <li><strong>Generate embedding.</strong> Run embedding as a child workflow on an embedding queue with a concurrency limit. This replaces the old <code>EMBEDDING_CONCURRENCY</code> semaphore. The step uses <code>preemptible=True</code> so cancellation interrupts the API call instead of waiting for it.</li>
+  <li><strong>Route to subscribers.</strong> Read <code>subscriptions</code> and <code>deliveries</code> and compute the event for each affected user. The table below lists all five cases.</li>
+  <li><strong>Enqueue notifications.</strong> Enqueue <code>bot.notify(user, kind, key, version)</code> on <code>notify_queue</code> with workflow ID <code>notify:{key}:{rev}:{user}</code>.</li>
+</ol>
+<p>Before steps 3 and 5, which have side effects, the workflow checks that its version is still the latest and exits quietly if not. Cancellation stops a stale run as early as possible. The version check covers what cancellation misses.</p>
+
+<p><strong>Routing rules for step 4</strong></p>
+<table>
+  <tr><th>Listing state</th><th>Delivered before?</th><th>Event</th><th>Result</th></tr>
+  <tr><td>Matches subscription</td><td>No</td><td><code>new</code></td><td>Send a new message</td></tr>
+  <tr><td>Matches subscription</td><td>Yes</td><td><code>updated</code></td><td>Edit the old message in place, with no new notification</td></tr>
+  <tr><td>Does not match</td><td>Yes</td><td><code>unmatched</code></td><td>Tell the user the new version no longer fits the subscription</td></tr>
+  <tr><td>Listing deleted</td><td>Yes</td><td><code>removed</code></td><td>Tell the user the listing was deleted</td></tr>
+  <tr><td>Does not match</td><td>No</td><td>None</td><td>Do nothing</td></tr>
+</table>
+<p>The delivery row stays after an <code>unmatched</code> event. If a later version matches again, the user gets an <code>updated</code> event. Whether that should notify the user, since they were last told it no longer matched, is still open.</p>
+
+<h2>Workflow <code>bot.notify</code></h2>
+<p>This workflow sends or updates one message for one user. It lives in the bot domain, and processing only enqueues it.</p>
+<ol>
+  <li><strong>Check freshness.</strong> Verify that <code>version</code> is still the latest. Exit if not.</li>
+  <li><strong>Send or edit, and record.</strong> Call Telegram and write the row in <code>deliveries</code> inside the same step.</li>
+</ol>
+<p>What step 2 sends depends on the event kind:</p>
+<ul>
+  <li><code>new</code> sends a message.</li>
+  <li><code>updated</code> silently edits the previously recorded message.</li>
+  <li><code>unmatched</code> and <code>removed</code> edit that message and tell the user explicitly that the listing no longer matches or was deleted.</li>
+</ul>
+<div class="note">
+  <p><strong>Why sending and recording share one step.</strong> Cancellation stops a workflow only between steps. If send and write were two steps, <code>cancel_children=True</code> could land after sending and before writing. The next revision would then send the same listing again as <code>new</code>.</p>
+  <p>Inside one step, a crash between sending and writing can still duplicate a message after recovery. That window is small and acceptable.</p>
+</div>
+<p>The step gets the bot client through <code>bot/runtime.py</code>. <code>BotService.start()</code> stores its client there, and <code>stop()</code> clears it. Nothing outside the bot domain touches this module. If the client is missing, the step raises and DBOS retries it later. The rate limit on <code>notify_queue</code> enforces the Bot API send rate.</p>
+
+<h2>User interfaces</h2>
+<p>Users manage their searches, stored as rows in <code>subscriptions</code>, through three interfaces. The interfaces differ only in how the user expresses intent. All three call the same subscription functions in the bot domain, so validation and side effects live in one place.</p>
+<table>
+  <tr><th>Interface</th><th>How the user works</th><th>Status</th></tr>
+  <tr><td>Command mode</td><td>Explicit bot commands to create, list, edit, and delete searches</td><td>Planned</td></tr>
+  <tr><td>Agent mode</td><td>Free text to the bot. An LLM agent turns it into calls to the same subscription functions, exposed as tools.</td><td>Experiment, enabled for part of the users</td></tr>
+  <tr><td>Mini App</td><td>Telegram Mini App with forms for doing the same by hand</td><td>First version: read-only list of the user's searches</td></tr>
+</table>
+<p><strong>Chat routing</strong></p>
+<p>Command mode and agent mode are two modes of one chat. A router in <code>BotService</code> receives every incoming message and picks the mode per user. Agent mode runs as an experiment. Users in the experiment group go to the agent, and everyone else goes to command mode.</p>
+<p>The experiment group is set in <code>BARABOT_AGENT_USERS</code> inside <code>config/.env</code> as a comma-separated list of Telegram user IDs. Agent users get no slash commands. Every message they send goes to the agent.</p>
+<p><strong>Telegram Mini App</strong></p>
+<p>The Mini App is a web page opened from the bot. <code>MiniAppService</code> runs as a third service in the same <code>TaskGroup</code> and serves the page plus a small HTTP API. The API validates Telegram <code>initData</code> with the bot token to identify the user, then calls the same subscription functions as the chat.</p>
+<p>First version scope:</p>
+<ul>
+  <li><code>GET /api/subscriptions</code> returns the current user's searches.</li>
+  <li>The page renders them as a list, with no editing yet.</li>
+</ul>
+
+<h2>DBOS findings</h2>
+<p>We checked DBOS behavior in a spike before writing production code. Nothing blocks the design. Full report: <code>~/Dev/agent-home/.experiments/dbos-spike/REPORT.md</code>.</p>
+<p><strong>Event loop and async API</strong></p>
+<ul>
+  <li><code>DBOS.launch()</code> and <code>destroy()</code> are synchronous and work inside the running loop. Async steps run on our loop and do not stall it. A 100 ms heartbeat lagged at most 36 ms normally, and 64 ms under load.</li>
+  <li>From coroutines, use only <code>*_async</code> calls: <code>enqueue_async</code>, <code>cancel_workflow_async</code>, <code>register_queue_async</code>, and <code>get_workflow_status_async</code>. Most sync versions raise inside the loop. Sync <code>enqueue</code> passes, but blocks on SQLite.</li>
+</ul>
+<p><strong>Cancellation, workflow IDs, and restarts</strong></p>
+<ul>
+  <li>A delayed enqueue can be cancelled before it starts. A burst of 5 events ran only the last revision.</li>
+  <li>Cancelling a running workflow lets the current step finish and stops before the next one, unless the step has <code>preemptible=True</code>.</li>
+  <li>Cancelling a parent leaves its children alone unless you pass <code>cancel_children=True</code>. With that flag, waiting and running children are cancelled, even when the parent already finished.</li>
+  <li>A known ID returns the existing workflow, including a cancelled one. Every revision needs a new ID, which <code>listing:{key}:{rev}</code> provides.</li>
+  <li>After <code>kill</code>, the workflow resumes at the interrupted step and repeats it in full. Delayed enqueues survive restart.</li>
+  <li>Each cancel of a running workflow logs a WARNING and an ERROR traceback for <code>DBOSAwaitedWorkflowCancelledError</code>. Filter it in the <code>dbos</code> logger.</li>
+</ul>
+<p><strong>SQLite and queue throughput</strong></p>
+<ul>
+  <li>No <code>database is locked</code> errors occurred at 50 events/s for 20 s with both databases written. DBOS uses <code>busy_timeout=30000</code>, so contention becomes waiting.</li>
+  <li>A queue with <code>worker_concurrency=1</code> starts one workflow per poll. <code>notify_queue</code> gets about 14 sends/s at <code>polling_interval_sec=0.05</code> and 4.6/s at 0.2. 14 sends/s is below the Bot API global limit, so use 0.05.</li>
+</ul>
+<p>Not covered by the spike: a real Telethon client, which we simulated with a coroutine, and Python versions other than 3.14.</p>
+
+<h2>Open questions</h2>
+<p>These points still need decisions before implementation.</p>
+<ul>
+  <li><strong>Public URL.</strong> Which public HTTPS URL to use for <code>MiniAppService</code>.</li>
+  <li><strong>Message texts.</strong> Exact wording for <code>new</code>, <code>unmatched</code>, and <code>removed</code>.</li>
+  <li><strong>Notifying on <code>unmatched</code> and <code>removed</code>.</strong> An edit alone triggers no Telegram notification, so this likely needs a reply to the original message.</li>
+  <li><strong>Re-matching after <code>unmatched</code>.</strong> Whether a later <code>updated</code> event should notify the user after they were previously told the listing no longer matched.</li>
+</ul>
+
+</main>
+</body>
+</html>
