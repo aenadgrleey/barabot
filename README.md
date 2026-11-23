@@ -53,7 +53,7 @@ The server runs barabot next to the tgmux gateway, with the same branch scheme a
 git push origin dev:prod     # fast-forward only: prod never gets ahead of dev
 ```
 
-`barabot-deploy.timer` runs [packaging/deploy.sh](packaging/deploy.sh) `--auto` every minute. When `origin/prod` moves, it checks out the commit, installs `requirements-tgmux.txt`, updates the systemd units from [packaging/systemd](packaging/systemd), runs `python -m barabot run --check` and restarts `barabot.service`. If the check fails or the service does not stay up for 10 seconds, it restores the previous commit. It logs the result to journald as `barabot-deploy`. A failed commit is not retried until `prod` moves again, and the timer never starts a service you stopped. By hand: `barabot-deploy`, `barabot-deploy --dry-run`, `barabot-deploy REF`.
+`barabot-deploy.timer` runs [packaging/deploy.sh](packaging/deploy.sh) `--auto` every minute. When `origin/prod` moves, it checks out the commit, installs `requirements-tgmux.txt`, updates the systemd units from [packaging/systemd](packaging/systemd), runs `python -m barabot run --check` and restarts `barabot.service`. If the check fails or the service does not stay up for 10 seconds, it restores the previous commit. It logs the result to journald as `barabot-deploy`: success at `notice`, failure and rollback at `err`. On aenaut, aenaut-notify forwards both to Telegram. A failed commit is not retried until `prod` moves again, and the timer never starts a service you stopped. By hand: `barabot-deploy`, `barabot-deploy --dry-run`, `barabot-deploy REF`.
 
 First install on the server, as root:
 
