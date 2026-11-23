@@ -4,6 +4,10 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from dotenv import dotenv_values
+
+from barabot.core.telegram import TelegramBackend, TelegramTransport
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 SETUP_COMMAND = ".venv/bin/python -m barabot setup"
@@ -29,15 +33,22 @@ def has_local_scraper_authorization(path: Path) -> bool:
     return row is not None
 
 
-def missing_setup_commands(root: Path) -> list[str]:
+def has_deploy_environment(path: Path) -> bool:
+    return bool(dotenv_values(path).get("BARABOT_ENV"))
+
+
+def missing_setup_commands(root: Path, transport: TelegramTransport | None = None) -> list[str]:
     """Return setup commands for artifacts absent below ``root``."""
+    if transport is None:
+        transport = TelegramBackend.configured(root).resolve()
     config_dir = root / "config"
     commands: list[str] = []
 
-    if not (config_dir / ".env").exists():
+    if not has_deploy_environment(config_dir / ".env"):
         commands.append(SETUP_COMMAND)
-    if not (config_dir / "scraper.env").exists() or not has_local_scraper_authorization(
-        config_dir / "scraper.session"
+    if transport.uses_local_session and (
+        not (config_dir / "scraper.env").exists()
+        or not has_local_scraper_authorization(config_dir / "scraper.session")
     ):
         commands.append(SCRAPER_COMMAND)
     if not (config_dir / "processor.env").exists():
@@ -48,15 +59,15 @@ def missing_setup_commands(root: Path) -> list[str]:
     return commands
 
 
-def next_setup_command(root: Path) -> str:
+def next_setup_command(root: Path, transport: TelegramTransport | None = None) -> str:
     """Return the next missing component command, or the readiness check."""
-    commands = missing_setup_commands(root)
+    commands = missing_setup_commands(root, transport)
     return commands[0] if commands else READY_COMMAND
 
 
-def setup_guidance_commands(root: Path) -> list[str]:
+def setup_guidance_commands(root: Path, transport: TelegramTransport | None = None) -> list[str]:
     """Return resumable setup guidance with the orchestrator first."""
-    missing = missing_setup_commands(root)
+    missing = missing_setup_commands(root, transport)
     if not missing:
         return []
     return list(dict.fromkeys([SETUP_COMMAND, *missing]))

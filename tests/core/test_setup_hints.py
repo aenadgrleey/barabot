@@ -30,7 +30,7 @@ def test_missing_setup_commands_are_ordered_and_scraper_is_deduplicated(
 
     config = tmp_path / "config"
     config.mkdir()
-    (config / ".env").touch()
+    (config / ".env").write_text("BARABOT_ENV=develop\n")
     (config / "processor.env").touch()
     (config / "bot.token").touch()
     assert setup_hints.missing_setup_commands(tmp_path) == [
@@ -46,6 +46,7 @@ def test_next_setup_command_reaches_ready_only_for_complete_setup(
     for name in (".env", "scraper.env", "processor.env", "bot.token"):
         (config / name).touch()
 
+    (config / ".env").write_text("BARABOT_ENV=develop\n")
     assert setup_hints.next_setup_command(tmp_path) == setup_hints.SCRAPER_COMMAND
     _authorized_session(tmp_path)
     assert setup_hints.next_setup_command(tmp_path) == setup_hints.READY_COMMAND

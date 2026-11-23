@@ -9,12 +9,16 @@ from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from dotenv import set_key
+
+from barabot.core.telegram import TelegramBackend
 from barabot.core.setup_hints import (
     BOT_COMMAND,
     PROCESSOR_COMMAND,
     READY_COMMAND,
     SCRAPER_COMMAND,
     SETUP_COMMAND,
+    has_deploy_environment,
     missing_setup_commands,
     next_setup_command,
 )
@@ -77,7 +81,7 @@ def _default_config_loader() -> Any:
     return load()
 
 
-def _write_environment(path: Path, environment: str) -> None:
+def _write_environment(path: Path, updates: Mapping[str, str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     path.parent.chmod(0o700)
     descriptor, temporary_name = tempfile.mkstemp(prefix=".env.", dir=path.parent)
@@ -85,9 +89,10 @@ def _write_environment(path: Path, environment: str) -> None:
     try:
         os.fchmod(descriptor, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(f"BARABOT_ENV={environment}\n")
-            stream.flush()
-            os.fsync(stream.fileno())
+            if path.exists():
+                stream.write(path.read_text(encoding="utf-8"))
+        for key, value in updates.items():
+            set_key(temporary_path, key, value, quote_mode="never")
         os.replace(temporary_path, path)
         path.chmod(0o600)
     except BaseException:
@@ -118,14 +123,6 @@ def _supplied(source: Mapping[str, str], names: tuple[str, ...]) -> tuple[str, .
     return tuple(name for name in names if source.get(name, "").strip())
 
 
-def _print_pending(root: Path) -> None:
-    commands = missing_setup_commands(root)
-    if commands:
-        print("Setup pending; run:")
-        for command in commands:
-            print(f"  {command}")
-
-
 async def setup_scraper(
     *,
     root: Path,
@@ -134,8 +131,12 @@ async def setup_scraper(
 ) -> int:
     """Perform the sole interactive Telegram OTP/2FA authorization step."""
     del config_loader  # authorization must not require complete runtime configuration
-    await scraper_authorize(root=root)
-    print(f"Next: {next_setup_command(root)}")
+    transport = TelegramBackend.configured(root).resolve()
+    if transport.uses_local_session:
+        await scraper_authorize(root=root)
+    else:
+        print("The tgmux gateway owns the scraper session.")
+    print(f"Next: {next_setup_command(root, transport)}")
     return 0
 
 
@@ -156,6 +157,8 @@ async def setup(
     """Configure supplied/missing artifacts, while deferring Telegram authorization."""
     del scraper_authorize  # plain and headless setup never touch the session
     source = os.environ if environ is None else environ
+    backend = TelegramBackend.configured(root, source)
+    transport = backend.resolve()
     config_dir = root / "config"
     env_path = config_dir / ".env"
     scraper_path = config_dir / "scraper.env"
@@ -165,19 +168,23 @@ async def setup(
     if headless:
         # Each group is independent. An absent group is a no-op; a partial group
         # fails at its position before any later group is applied.
-        environment_values = _supplied(source, ("BARABOT_ENV",))
-        if environment_values and (force or not env_path.exists()):
+        updates = {}
+        if source.get("BARABOT_ENV") and (force or not has_deploy_environment(env_path)):
             environment = source["BARABOT_ENV"].strip()
             if environment not in {"develop", "prod"}:
                 return _headless_failure("environment", "BARABOT_ENV")
+            updates["BARABOT_ENV"] = environment
+        if "TELEGRAM_BACKEND" in source or updates:
+            updates["TELEGRAM_BACKEND"] = backend.value
+        if updates:
             try:
-                _write_environment(env_path, environment)
-            except (KeyboardInterrupt, EOFError):
-                raise
-            except BaseException:
-                return _headless_failure("environment", "BARABOT_ENV")
+                _write_environment(env_path, updates)
+            except OSError:
+                return _headless_failure("environment", *updates)
 
-        scraper_values = _supplied(source, ("API_ID", "API_HASH"))
+        scraper_values = (
+            transport.uses_local_session and _supplied(source, ("API_ID", "API_HASH"))
+        )
         if scraper_values:
             missing = tuple(
                 name for name in ("API_ID", "API_HASH") if not source.get(name, "").strip()
@@ -220,7 +227,7 @@ async def setup(
             except BaseException:
                 return _headless_failure("bot", "BOT_TOKEN")
     else:
-        if env_path.exists() and not force:
+        if has_deploy_environment(env_path) and not force:
             print("Skip environment: already configured.")
         else:
             try:
@@ -229,13 +236,15 @@ async def setup(
                     if environment in {"develop", "prod"}:
                         break
                     print("BARABOT_ENV must be develop or prod.")
-                _write_environment(env_path, environment)
+                _write_environment(env_path, {"BARABOT_ENV": environment, "TELEGRAM_BACKEND": backend.value})
             except (KeyboardInterrupt, EOFError):
                 raise
             except BaseException:
                 return _failure("environment", SETUP_COMMAND)
 
-        if scraper_path.exists() and not force:
+        if not transport.uses_local_session:
+            print("Using the tgmux gateway for Telegram authorization.")
+        elif scraper_path.exists() and not force:
             print("Skip scraper credentials: already configured.")
         else:
             try:
@@ -270,8 +279,11 @@ async def setup(
             except BaseException:
                 return _failure("bot", BOT_COMMAND)
 
-    if missing_setup_commands(root):
-        _print_pending(root)
+    pending = missing_setup_commands(root, transport)
+    if pending:
+        print("Setup pending; run:")
+        for command in pending:
+            print(f"  {command}")
         return 0
 
     try:

@@ -10,6 +10,8 @@ from typing import ClassVar
 
 from dotenv import load_dotenv
 
+from barabot.core.telegram import TelegramBackend, TelegramTransport
+
 # barabot/core/config.py → barabot/core → barabot → <project>
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -51,9 +53,10 @@ def _list(name: str) -> list[int]:
 class Config:
     bot_token_path: ClassVar[Path] = PROJECT_ROOT / "config" / "bot.token"
 
+    telegram: TelegramTransport
     environment: DeployEnvironment
-    api_id: int
-    api_hash: str
+    api_id: int | None
+    api_hash: str | None
     openai_api_key: str
     embedding_model: str
     embedding_url: str
@@ -85,7 +88,9 @@ def _validate_threshold(value: float) -> None:
 
 
 def load() -> Config:
-    load_dotenv(PROJECT_ROOT / "config" / "scraper.env", override=False)
+    transport = TelegramBackend.configured(PROJECT_ROOT).resolve()
+    if transport.uses_local_session:
+        load_dotenv(PROJECT_ROOT / "config" / "scraper.env", override=False)
     load_dotenv(PROJECT_ROOT / "config" / "processor.env", override=False)
     load_dotenv(PROJECT_ROOT / "config" / ".env", override=False)
 
@@ -103,8 +108,12 @@ def load() -> Config:
             f"accepted values: {accepted_environments}"
         ) from exc
 
-    api_hash = _required("API_HASH")
-    _validate_api_hash(api_hash)
+    api_id = None
+    api_hash = None
+    if transport.uses_local_session:
+        api_id = int(_required("API_ID"))
+        api_hash = _required("API_HASH")
+        _validate_api_hash(api_hash)
     threshold = _float("SIMILARITY_THRESHOLD", 0.85)
     _validate_threshold(threshold)
     log_level = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -123,8 +132,9 @@ def load() -> Config:
         raise RuntimeError("EMBEDDING_TIMEOUT must be >= 1")
 
     return Config(
+        telegram=transport,
         environment=environment,
-        api_id=int(_required("API_ID")),
+        api_id=api_id,
         api_hash=api_hash,
         openai_api_key=_required("OPENAI_API_KEY"),
         embedding_model=os.getenv("EMBEDDING_MODEL", "text-embedding-3-small"),

@@ -121,3 +121,21 @@ def test_invalid_barabot_env_fails_with_value_and_accepted_values(
 
     with pytest.raises(RuntimeError, match=r"BARABOT_ENV.*staging.*develop.*prod"):
         config.load()
+
+
+def test_telegram_backend_file_and_override(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from barabot.core.telegram import TelegramBackend, TelegramConfigError
+
+    monkeypatch.delenv("TELEGRAM_BACKEND")
+    monkeypatch.setitem(sys.modules, "tgmux", SimpleNamespace(SharedClient=object))
+    path = tmp_path / "config" / ".env"
+    path.parent.mkdir()
+    assert TelegramBackend.configured(tmp_path).resolve().client_type is object
+    path.write_text("TELEGRAM_BACKEND=telethon\n")
+    assert TelegramBackend.configured(tmp_path).resolve().uses_local_session
+    monkeypatch.setenv("TELEGRAM_BACKEND", "tgmux")
+    assert TelegramBackend.configured(tmp_path).resolve().client_type is object
+    monkeypatch.setenv("TELEGRAM_BACKEND", "typo")
+    with pytest.raises(TelegramConfigError, match="TELEGRAM_BACKEND"):
+        TelegramBackend.configured(tmp_path)

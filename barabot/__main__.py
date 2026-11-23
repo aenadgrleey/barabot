@@ -41,6 +41,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from barabot.core.telegram import TelegramConfigError
 from barabot.core.config import Config
 from barabot.core.locks import _acquire_lock, _release_lock, _remove_pid, _write_pid
 from barabot.core.service import Service
@@ -54,8 +55,8 @@ from barabot.core.setup_hints import (
     next_setup_command,
     setup_guidance_commands,
 )
-from barabot.domains.bot import BotService
-from barabot.domains.processor import ProcessorService
+from barabot.domains.bot.service import BotService
+from barabot.domains.processor.service import ProcessorService
 from barabot.domains.scraper import ScraperService
 
 log = logging.getLogger("barabot")
@@ -80,6 +81,9 @@ def _load_config_or_exit(*, setup_root: Path | None = None) -> Config:
 
     try:
         return barabot_load()
+    except TelegramConfigError as exc:
+        print(f"config check failed: {exc}", file=sys.stderr)
+        sys.exit(2)
     except Exception as exc:  # noqa: BLE001
         print(f"config check failed: {exc}", file=sys.stderr)
         commands = setup_guidance_commands(setup_root or PROJECT_ROOT)
@@ -92,16 +96,16 @@ def _load_config_or_exit(*, setup_root: Path | None = None) -> Config:
 
 def _check_config() -> int:
     """`run --check`: validate .env, print summary, return exit code."""
-    pending = missing_setup_commands(PROJECT_ROOT)
+    cfg = _load_config_or_exit()
+    pending = missing_setup_commands(PROJECT_ROOT, cfg.telegram)
     if pending:
         print("config check failed: setup is incomplete", file=sys.stderr)
         print("missing setup:", file=sys.stderr)
-        for command in setup_guidance_commands(PROJECT_ROOT):
+        for command in dict.fromkeys([SETUP_COMMAND, *pending]):
             print(f"  {command}", file=sys.stderr)
         return 2
-    cfg = _load_config_or_exit()
     print(
-        f"barabot config ok: api_id={cfg.api_id} "
+        f"barabot config ok: scraper={cfg.telegram.backend} "
         f"chats={len(cfg.watch_chats)} threshold={cfg.similarity_threshold} "
         f"log_level={cfg.log_level}"
     )
@@ -223,6 +227,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return asyncio.run(
                 setup(root=PROJECT_ROOT, force=args.force, headless=args.headless)
             )
+        except TelegramConfigError as exc:
+            parser.error(str(exc))
         except (KeyboardInterrupt, EOFError):
             command = (
                 SCRAPER_COMMAND if args.setup_component == "scraper" else SETUP_COMMAND
