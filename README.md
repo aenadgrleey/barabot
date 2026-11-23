@@ -45,18 +45,36 @@ Set `TELEGRAM_BACKEND` in `config/.env`. An exported environment variable takes 
 
 To change the embedding provider, run `python -m barabot processor configure`. For unattended setup, supply `BARABOT_ENV`, `TELEGRAM_BACKEND`, `OPENAI_API_KEY` and `BOT_TOKEN` in the environment and run `python -m barabot setup --headless`. For direct Telethon, also supply `API_ID` and `API_HASH`, then authorize the session interactively once. See the [environment template](.env.example).
 
-## Deploy with tgmux
+## Deploy
 
-Run these commands as root from the configured production checkout with `barabot-prod.service` installed. The systemd drop-in gives the service access to the default gateway socket and the directory where tgmux creates its integration lock. If the gateway requires manual registration, run `tgmux integration add barabot` once.
+The server runs barabot next to the tgmux gateway, with the same branch scheme as tgmux. `dev` is where work lands, `prod` is what the server runs. A push to `prod` deploys itself within about a minute:
 
 ```bash
-.venv/bin/pip install -r requirements-tgmux.txt
-install -Dm644 packaging/systemd/tgmux.conf /etc/systemd/system/barabot-prod.service.d/tgmux.conf
-systemctl daemon-reload
-.venv/bin/python -m barabot run --check
-systemctl restart barabot-prod.service
-journalctl -u barabot-prod.service -f
+git push origin dev:prod     # fast-forward only: prod never gets ahead of dev
 ```
+
+`barabot-deploy.timer` runs [packaging/deploy.sh](packaging/deploy.sh) `--auto` every minute. When `origin/prod` moves, it checks out the commit, installs `requirements-tgmux.txt`, updates the systemd units from [packaging/systemd](packaging/systemd), runs `python -m barabot run --check` and restarts `barabot.service`. If the check fails or the service does not stay up for 10 seconds, it restores the previous commit. It logs the result to journald as `barabot-deploy`. A failed commit is not retried until `prod` moves again, and the timer never starts a service you stopped. By hand: `barabot-deploy`, `barabot-deploy --dry-run`, `barabot-deploy REF`.
+
+First install on the server, as root:
+
+```bash
+git clone -b prod https://github.com/aenadgrleey/barabot.git /opt/barabot
+python3 -m venv /opt/barabot/.venv
+/opt/barabot/.venv/bin/pip install -r /opt/barabot/requirements-tgmux.txt
+ln -s /opt/barabot/packaging/deploy.sh /usr/local/bin/barabot-deploy
+ln -s /opt/barabot/packaging/deploy.sh /etc/aenaut-deploy/projects/barabot
+
+# config/ is not in git: .env (BARABOT_ENV=prod, TELEGRAM_BACKEND=tgmux), processor.env, bot.token
+mkdir -p -m 700 /opt/barabot/config /opt/barabot/data
+tgmux integration add barabot        # if the gateway does not register on first connect
+cd /opt/barabot && .venv/bin/python -m barabot run --check
+
+cp /opt/barabot/packaging/systemd/barabot{,-deploy}.service /opt/barabot/packaging/systemd/barabot-deploy.timer /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now barabot barabot-deploy.timer
+journalctl -u barabot -f
+```
+
+`barabot.service` hides `/root` except `/root/.local/state/tgmux/default`, where the gateway socket and the integration lock live.
 
 ## Tests
 

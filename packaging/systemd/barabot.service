@@ -1,0 +1,36 @@
+# barabot on a server, connected through the local tgmux gateway (instance "default").
+#
+# Code:   /opt/barabot (git work tree, venv in /opt/barabot/.venv)
+# Config: /opt/barabot/config/  .env, processor.env, bot.token (0600, not in git)
+# State:  /opt/barabot/data/    SQLite, lock, pid
+#
+# Installed and kept up to date by barabot-deploy. Logs: journalctl -u barabot -f
+
+[Unit]
+Description=barabot
+After=network-online.target tgmux.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+SyslogIdentifier=barabot
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=/opt/barabot
+ExecStartPre=/opt/barabot/.venv/bin/python -m barabot run --check
+ExecStart=/opt/barabot/.venv/bin/python -m barabot run
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+UMask=0077
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+# /root is hidden except the tgmux socket directory: the socket and locks/barabot.lock live there.
+ProtectHome=tmpfs
+BindPaths=/root/.local/state/tgmux/default
+ReadWritePaths=/opt/barabot/config /opt/barabot/data
+
+[Install]
+WantedBy=multi-user.target

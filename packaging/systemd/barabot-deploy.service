@@ -1,0 +1,11 @@
+# Deploy origin/prod if it moved (run by barabot-deploy.timer).
+# Installed and kept up to date by barabot-deploy itself; logs: journalctl -u barabot-deploy
+[Unit]
+Description=barabot: deploy origin/prod if it changed
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/barabot/packaging/deploy.sh --auto
+TimeoutStartSec=10min

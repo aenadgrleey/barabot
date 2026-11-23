@@ -1,2 +1,2 @@
 -r requirements.txt
-tgmux @ git+https://github.com/aenadgrleey/tgmux.git@e30b5431df8b70d91854695c22546674b9c9fc59
+tgmux @ git+https://github.com/aenadgrleey/tgmux.git@eae116dae16ee6289f8785f85f59cff465ed4296
