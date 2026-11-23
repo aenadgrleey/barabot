@@ -66,11 +66,13 @@ class Config:
     embedding_concurrency: int
     embedding_retries: int
     embedding_timeout: int
+    backfill_hours: int
 
     scraper_session_path: Path = field(
         default_factory=lambda: PROJECT_ROOT / "config" / "scraper.session"
     )
     db_path: Path = field(default_factory=lambda: PROJECT_ROOT / "data" / "barabot.sqlite")
+    dbos_path: Path = field(default_factory=lambda: PROJECT_ROOT / "data" / "dbos.sqlite")
     lock_path: Path = field(default_factory=lambda: PROJECT_ROOT / "data" / "barabot.lock")
     pid_path: Path = field(default_factory=lambda: PROJECT_ROOT / "data" / "barabot.pid")
 
@@ -130,6 +132,9 @@ def load() -> Config:
     timeout = _int("EMBEDDING_TIMEOUT", 30)
     if timeout < 1:
         raise RuntimeError("EMBEDDING_TIMEOUT must be >= 1")
+    backfill_hours = _int("BACKFILL_HOURS", 24)
+    if backfill_hours < 0:
+        raise RuntimeError("BACKFILL_HOURS must be >= 0")
 
     return Config(
         telegram=transport,
@@ -145,4 +150,5 @@ def load() -> Config:
         embedding_concurrency=concurrency,
         embedding_retries=retries,
         embedding_timeout=timeout,
+        backfill_hours=backfill_hours,
     )

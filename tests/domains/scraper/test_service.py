@@ -14,7 +14,9 @@ def test_gateway_uses_registered_name_and_propagates_refusal(monkeypatch):
     client.connect.side_effect = ConnectionError("gateway refused")
     shared = Mock(return_value=client)
     monkeypatch.setitem(sys.modules, "tgmux", SimpleNamespace(SharedClient=shared))
-    scraper = service.ScraperService(SimpleNamespace(telegram=telegram.TelegramBackend.TGMUX.resolve()))
+    scraper = service.ScraperService(
+        SimpleNamespace(telegram=telegram.TelegramBackend.TGMUX.resolve(), watch_chats=[]), ingest=AsyncMock()
+    )
 
     async def scenario():
         with pytest.raises(ConnectionError, match="gateway refused"):
@@ -33,13 +35,16 @@ def test_failed_optional_import_starts_local_telethon(monkeypatch, tmp_path, mod
     session = tmp_path / "scraper.session"
     monkeypatch.setattr(service, "has_local_scraper_authorization", lambda path: path == session)
     client = AsyncMock()
+    client.add_event_handler = Mock()
     client.is_user_authorized.return_value = True
     constructor = Mock(return_value=client)
     monkeypatch.setattr(telegram, "TelegramClient", constructor)
     transport = telegram.TelegramBackend.TGMUX.resolve()
     assert transport.uses_local_session
-    cfg = SimpleNamespace(telegram=transport, scraper_session_path=session, api_id=123, api_hash="a" * 32)
-    scraper = service.ScraperService(cfg)
+    cfg = SimpleNamespace(
+        telegram=transport, scraper_session_path=session, api_id=123, api_hash="a" * 32, watch_chats=[]
+    )
+    scraper = service.ScraperService(cfg, ingest=AsyncMock())
 
     async def scenario():
         client.disconnected = asyncio.get_running_loop().create_future()
@@ -53,4 +58,5 @@ def test_failed_optional_import_starts_local_telethon(monkeypatch, tmp_path, mod
     constructor.assert_called_once_with(str(session), cfg.api_id, cfg.api_hash)
     client.connect.assert_awaited_once()
     client.is_user_authorized.assert_awaited_once()
+    assert client.add_event_handler.call_count == 3
     client.disconnect.assert_awaited_once()

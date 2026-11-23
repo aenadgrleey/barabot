@@ -4,9 +4,9 @@ Barabot is a Python service for finding relevant listings in selected Telegram c
 
 ## Architecture
 
-Barabot runs three services in one process. The scraper owns the Telegram user connection. The processor domain owns the embedding model, provider settings and similarity threshold. The bot domain owns the BotFather token for the user-facing bot. The scraper session and bot token belong to separate Telegram identities.
+Barabot runs in one process: a scraper and a bot service on one asyncio loop, with background processing in [DBOS](https://docs.dbos.dev) workflows. The scraper owns the Telegram user connection and writes messages to `data/barabot.sqlite`. Each event schedules a debounced `process_listing` run that assembles the listing and saves a new version. DBOS keeps workflow state in `data/dbos.sqlite`. The processor domain owns the embedding settings. The bot domain owns the BotFather token. The scraper session and bot token belong to separate Telegram identities. The full design, including what is not built yet, is in [docs/architecture.html](docs/architecture.html).
 
-At startup, Barabot loads the configuration, takes an exclusive lock on `data/barabot.lock` and writes its PID to `data/barabot.pid`. It starts the scraper, processor and bot in that order, then runs their tasks in one `asyncio.TaskGroup`. If one task fails, the group cancels the others. On `SIGINT` or `SIGTERM`, the services stop in reverse order and the scraper closes its connection last. See the [entry point](barabot/__main__.py) and [service contract](barabot/core/service.py).
+At startup, Barabot loads the configuration, takes an exclusive lock on `data/barabot.lock` and writes its PID to `data/barabot.pid`. It migrates the app database, launches DBOS, then starts the scraper and bot and runs them in one `asyncio.TaskGroup`. If one task fails, the group cancels the others. On `SIGINT` or `SIGTERM`, the services stop in reverse order and DBOS shuts down last. See the [entry point](barabot/__main__.py) and [service contract](barabot/core/service.py).
 
 ## Run locally
 
@@ -37,7 +37,7 @@ Set `TELEGRAM_BACKEND` in `config/.env`. An exported environment variable takes 
 
 | Local file | Contents |
 | --- | --- |
-| `config/.env` | Deployment mode (`BARABOT_ENV=develop` or `prod`), Telegram backend, chat IDs and log level |
+| `config/.env` | Deployment mode (`BARABOT_ENV=develop` or `prod`), Telegram backend, chat IDs, backfill depth and log level |
 | `config/scraper.env` | `API_ID` and `API_HASH` for direct Telethon |
 | `config/scraper.session` | Authorized local Telethon session |
 | `config/processor.env` | Embeddings API key, endpoint, model and similarity settings |
