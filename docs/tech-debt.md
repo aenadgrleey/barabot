@@ -6,6 +6,8 @@ Known gaps we chose to ship with. Each entry says what breaks, how to tell how o
 
 **What happens.** An album (one `grouped_id`) is one listing. When its text is not enough and it goes to the photo round, `JevDecider` sends only the first `JEV_IMAGES.max_images` (4) photos in `msg_id` order and drops the rest. If the useful photo, such as a floor plan or a shot of the windows, is fifth or later, Jev never sees it and the subscription stays `unclear`. Each photo costs about 1300 input tokens, so sending all of them is not free either.
 
+**First numbers.** In 300-message samples from @NSbaraholka and @serbska_baraholka, 25 of 59 and 23 of 61 albums had more than 4 photos, up to 10: about 40% of albums. In the first hour only 21 of 536 Jev requests needed the photo round, mostly for an attribute only a photo shows (a coat's colour), so truncation matters less than the album numbers suggest. A real photo at Telegram's 800 px size cost about 730 input tokens.
+
 **How to measure.** After a day in a real chat, count albums and how many exceed the limit:
 
 ```sql
@@ -38,6 +40,10 @@ WHERE m.album = 1 AND m.round = 2;
 - Pick photos by content first, for example a cheap question per photo "does this photo show <attribute>", then send only those.
 
 ## Other known gaps
+
+- **Media is never cleaned up.** The scraper downloads every photo of every album, including the ones Jev never sees. Two busy chats produced about 60 MB in the first minutes of backfill, a few hundred MB a day. Fix: delete files of decided versions after a retention period, or download only the first `max_images` photos of an album.
+- **Forum topics are ignored.** @serbska_baraholka is a forum; the topic (for example "sell" vs "buy" vs chat) is not passed to Jev. Some messages there are just a link to another post in the topic, which Jev answers as unclear.
+- **Answers jump near the thresholds.** Repeating the same request gives the same answer (mean change 0.003), and other questions in the request do not change it, but single answers sometimes jump by up to 0.2. Matches close to `FITS_MIN` or `AUTHOR_MIN` can flip when a listing is re-checked.
 
 - **Deletes while the process is down are never seen.** Backfill re-reads recent history, but `iter_messages` does not return deleted messages. Measure: none yet. Fix: periodically re-check that stored live messages still exist.
 - **Photo download through tgmux is untested on live Telegram.** The gateway policy allows `upload.GetFile`, but downloads from another Telegram data center have not been tried. Measure: `Could not download photo` warnings in the log and the share of photo descriptors without a `file`.
