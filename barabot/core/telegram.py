@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -30,7 +30,7 @@ class TelegramBackend(StrEnum):
     def resolve(self) -> TelegramTransport:
         if self is TelegramBackend.TGMUX:
             try:
-                from tgmux import SharedClient
+                from tgmux import SharedClient  # pyright: ignore[reportMissingImports]  # optional extra
             except ImportError as exc:
                 logging.getLogger(__name__).warning("Using Telethon because tgmux import failed: %s", exc)
             else:
@@ -45,7 +45,8 @@ class TelegramConfigError(ValueError):
 @dataclass(frozen=True)
 class TelegramTransport:
     backend: TelegramBackend
-    client_type: type[TelegramClient]
+    # SharedClient takes only a name, TelegramClient also takes the API credentials.
+    client_type: Callable[..., TelegramClient]
 
     @property
     def uses_local_session(self) -> bool:

@@ -28,10 +28,14 @@ class PhotoDownloader:
         self._spec = spec
         self._media_dir = media_dir
 
-    def pick_size(self, photo: types.Photo) -> object | None:
+    def pick_size(self, photo: types.Photo) -> types.PhotoSize | types.PhotoCachedSize | types.PhotoSizeProgressive | None:
         """The Telegram photo size to download, or None to skip the photo."""
-        # Stripped and empty sizes carry no dimensions and are never candidates.
-        sized = [s for s in photo.sizes if getattr(s, "w", None) and getattr(s, "h", None)]
+        # Stripped, path and empty sizes carry no dimensions and are never candidates.
+        sized = [
+            s
+            for s in photo.sizes
+            if isinstance(s, (types.PhotoSize, types.PhotoCachedSize, types.PhotoSizeProgressive)) and s.w and s.h
+        ]
         index = self._spec.pick([(s.w, s.h) for s in sized])
         return None if index is None else sized[index]
 

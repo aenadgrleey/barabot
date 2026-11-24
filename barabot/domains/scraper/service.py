@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 
 from telethon import TelegramClient, events
 from telethon.tl import types
+from telethon.tl.patched import Message
 
 from barabot.core.config import Config
 from barabot.core.setup_hints import SCRAPER_COMMAND, has_local_scraper_authorization
@@ -64,7 +65,7 @@ class ScraperService:
             await asyncio.gather(self._backfill, return_exceptions=True)
             self._backfill = None
         if self.client is not None:
-            await self.client.disconnect()
+            await self.client.disconnect()  # pyright: ignore[reportGeneralTypeIssues]  # a coroutine inside a running loop
             self.client = None
 
     async def _on_message(self, event: events.NewMessage.Event) -> None:
@@ -98,6 +99,7 @@ class ScraperService:
         Deletes that happened while the process was down are not seen:
         iter_messages simply does not return those messages.
         """
+        assert self.client is not None
         since = datetime.now(UTC) - timedelta(hours=self.cfg.backfill_hours)
         for chat_id in sorted(self._chats):
             count = 0
@@ -137,14 +139,15 @@ async def connect_client(cfg: Config, client: TelegramClient) -> None:
 
 def to_seen(msg: object) -> SeenMessage | None:
     """Convert a Telethon message; service messages are not listings."""
-    if not isinstance(msg, types.Message):
+    # Telethon swaps types.Message for this subclass at import; only it declares chat_id and sender_id.
+    if not isinstance(msg, Message):
         return None
     return SeenMessage(
-        chat_id=msg.chat_id,
+        chat_id=msg.chat_id,  # pyright: ignore[reportArgumentType]  # every message has a peer
         msg_id=msg.id,
         grouped_id=msg.grouped_id,
         sender_id=msg.sender_id,
-        date=msg.date,
+        date=msg.date,  # pyright: ignore[reportArgumentType]  # optional in the schema, set on every message
         text=msg.message or "",
         media=describe_media(msg.media),
     )
