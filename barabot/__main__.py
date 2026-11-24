@@ -86,7 +86,7 @@ def _load_config_or_exit(*, setup_root: Path | None = None) -> Config:
     except TelegramConfigError as exc:
         print(f"config check failed: {exc}", file=sys.stderr)
         sys.exit(2)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         print(f"config check failed: {exc}", file=sys.stderr)
         commands = setup_guidance_commands(setup_root or PROJECT_ROOT)
         if commands:
@@ -212,7 +212,7 @@ async def _run_barabot() -> None:
         for svc in reversed(services):
             try:
                 await svc.stop()
-            except Exception as exc:  # noqa: BLE001 — best-effort cleanup
+            except Exception as exc:  # best-effort cleanup
                 log.error("error stopping %s: %s", type(svc).__name__, exc)
         if dbos_up:
             durable.shutdown()
