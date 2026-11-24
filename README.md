@@ -104,4 +104,9 @@ systemctl start barabot-deploy.timer
 
 ```bash
 uv run pytest -q
+uv run ruff check
+uv run ruff format --check
+uv run pyright
 ```
+
+The test run takes about a minute, mostly DBOS. Ruff uses its default rule set with the exceptions in [pyproject.toml](pyproject.toml); `uv run ruff check --fix` and `uv run ruff format` apply its fixes. Pyright reads library code where a library has no type hints, which is how it checks calls into Telethon.

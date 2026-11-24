@@ -19,8 +19,10 @@ tgmux = ["tgmux"]
 
 [dependency-groups]
 dev = [
+    "pyright[nodejs]>=1.1.414",
     "pytest>=9",
     "pytest-asyncio>=1",
+    "ruff>=0.17.6",
 ]
 
 [tool.uv]
@@ -33,3 +35,23 @@ tgmux = { git = "https://github.com/aenadgrleey/tgmux.git", rev = "eae116dae16ee
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+# The longest lines in the code are about this long; a shorter limit mostly rewraps.
+line-length = 120
+
+[tool.ruff.lint]
+# Ruff's default rule set (curated for bugs, pinned through uv.lock) plus these changes.
+ignore = [
+    "BLE001",  # catching Exception at service and setup boundaries is deliberate here
+    "TRY004",  # every ValueError in bot.auth becomes AuthorizationError anyway
+]
+
+[tool.pyright]
+include = ["barabot", "tests"]
+typeCheckingMode = "standard"
+executionEnvironments = [
+    # Tests pass fakes where the code expects real clients and configs.
+    { root = "tests", extraPaths = ["."], reportArgumentType = false, reportAttributeAccessIssue = false, reportOptionalMemberAccess = false },
+    { root = "." },
+]
