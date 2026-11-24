@@ -44,6 +44,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from dbos import DBOS, DBOSConfiguredInstance, Queue, SetEnqueueOptions, SetWorkflowID
 
@@ -63,7 +64,7 @@ LISTINGS_QUEUE = "listings"
 
 # Jev calls: cancellation interrupts the HTTP request (preemptible), and
 # transient API errors are retried durably, on top of the SDK's own retries.
-_JEV_STEP = dict(
+_JEV_STEP: dict[str, Any] = dict(
     preemptible=True,
     timeout_seconds=120.0,
     retries_allowed=True,
@@ -147,6 +148,7 @@ class ListingProcessor(DBOSConfiguredInstance):
         if assembled.outcome in ("stale", "unchanged"):
             return assembled.outcome
         snapshot = assembled.snapshot
+        assert snapshot is not None, "changed and undecided listings carry a snapshot"
         if assembled.outcome == "changed":
             version = await self.save_version(key, rev, snapshot, assembled.seen_version)
             if version is None:

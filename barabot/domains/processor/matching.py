@@ -35,6 +35,7 @@ from typesafe_sdk import (
     Choice,
     Image,
     Noul,
+    NoulCriteria,
     TypeSafeAPIConnectionError,
     TypeSafeBadRequestError,
     TypeSafeInternalServerError,
@@ -124,7 +125,7 @@ def build_questions(subscriptions: Sequence[Subscription]) -> tuple[dict, dict[i
         role = (sub.author, sub.author_not)
         if role not in role_keys:
             role_keys[role] = f"author_{len(role_keys)}"
-            criteria = {"false": sub.author_not} if sub.author_not else None
+            criteria: NoulCriteria | None = {"false": sub.author_not} if sub.author_not else None
             questions[role_keys[role]] = Noul(instructions=AUTHOR_PROMPT.format(author=sub.author), criteria=criteria)
         author_key[sub.id] = role_keys[role]
         questions[f"sub_{sub.id}"] = Choice(
