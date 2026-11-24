@@ -1,4 +1,5 @@
 """Process-wide configuration loaded from layered private env files."""
+
 from __future__ import annotations
 
 import os
@@ -28,9 +29,7 @@ class DeployEnvironment(Enum):
 def _required(name: str) -> str:
     value = os.getenv(name, "").strip()
     if not value:
-        raise RuntimeError(
-            f"{name} is missing. Copy .env.example to .env and fill it in."
-        )
+        raise RuntimeError(f"{name} is missing. Copy .env.example to .env and fill it in.")
     return value
 
 
@@ -67,9 +66,7 @@ class Config:
     jev_price_per_m_input: float  # USD per million input tokens, used to compute spend
     stats_interval_minutes: int  # digest period; 0 turns the digest off
 
-    scraper_session_path: Path = field(
-        default_factory=lambda: PROJECT_ROOT / "config" / "scraper.session"
-    )
+    scraper_session_path: Path = field(default_factory=lambda: PROJECT_ROOT / "config" / "scraper.session")
     db_path: Path = field(default_factory=lambda: PROJECT_ROOT / "data" / "barabot.sqlite")
     dbos_path: Path = field(default_factory=lambda: PROJECT_ROOT / "data" / "dbos.sqlite")
     media_dir: Path = field(default_factory=lambda: PROJECT_ROOT / "data" / "media")
@@ -79,9 +76,12 @@ class Config:
 
 def _validate_api_hash(value: str) -> None:
     if not re.fullmatch(r"[0-9a-fA-F]{32}", value):
-        raise RuntimeError(
-            "API_HASH must be 32 hex characters (get it from https://my.telegram.org)"
-        )
+        raise RuntimeError("API_HASH must be 32 hex characters (get it from https://my.telegram.org)")
+
+
+def _price() -> float:
+    price = _float("JEV_PRICE_PER_M_INPUT", None)
+    return 0.042 if price is None else price
 
 
 def _non_negative(value, name: str):
@@ -100,15 +100,12 @@ def load() -> Config:
     raw_environment = os.getenv("BARABOT_ENV", "").strip()
     accepted_environments = "develop, prod"
     if not raw_environment:
-        raise RuntimeError(
-            f"BARABOT_ENV is missing; accepted values: {accepted_environments}"
-        )
+        raise RuntimeError(f"BARABOT_ENV is missing; accepted values: {accepted_environments}")
     try:
         environment = DeployEnvironment(raw_environment)
     except ValueError as exc:
         raise RuntimeError(
-            f"BARABOT_ENV has invalid value {raw_environment!r}; "
-            f"accepted values: {accepted_environments}"
+            f"BARABOT_ENV has invalid value {raw_environment!r}; accepted values: {accepted_environments}"
         ) from exc
 
     api_id = None
@@ -119,9 +116,7 @@ def load() -> Config:
         _validate_api_hash(api_hash)
     log_level = os.getenv("LOG_LEVEL", "INFO").upper()
     if log_level not in _VALID_LOG_LEVELS:
-        raise RuntimeError(
-            f"LOG_LEVEL must be one of {sorted(_VALID_LOG_LEVELS)}, got {log_level!r}"
-        )
+        raise RuntimeError(f"LOG_LEVEL must be one of {sorted(_VALID_LOG_LEVELS)}, got {log_level!r}")
     backfill_hours = _int("BACKFILL_HOURS", 24)
     if backfill_hours < 0:
         raise RuntimeError("BACKFILL_HOURS must be >= 0")
@@ -136,6 +131,6 @@ def load() -> Config:
         backfill_hours=backfill_hours,
         typesafe_api_key=_required("TYPESAFE_API_KEY"),
         jev_budget_usd=_non_negative(_float("JEV_BUDGET_USD", None), "JEV_BUDGET_USD"),
-        jev_price_per_m_input=_non_negative(_float("JEV_PRICE_PER_M_INPUT", 0.042), "JEV_PRICE_PER_M_INPUT"),
+        jev_price_per_m_input=_non_negative(_price(), "JEV_PRICE_PER_M_INPUT"),
         stats_interval_minutes=_non_negative(_int("STATS_INTERVAL_MINUTES", 60), "STATS_INTERVAL_MINUTES"),
     )

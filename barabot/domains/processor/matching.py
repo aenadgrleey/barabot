@@ -20,6 +20,7 @@ The wording comes from the barabot-jev-spike bench in agent-home
 .experiments: on 25 messages x 14 subscriptions it made no errors, and the
 "false" description was what separated roles.
 """
+
 from __future__ import annotations
 
 import logging
@@ -28,8 +29,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from barabot.core.images import ImageSpec
-from barabot.domains.processor.budget import Budget
 from typesafe_sdk import (
     AsyncTypeSafeClient,
     Choice,
@@ -42,6 +41,9 @@ from typesafe_sdk import (
     TypeSafeRateLimitError,
     TypeSafeUnprocessableEntityError,
 )
+
+from barabot.core.images import ImageSpec
+from barabot.domains.processor.budget import Budget
 
 log = logging.getLogger(__name__)
 
@@ -137,7 +139,9 @@ def build_questions(subscriptions: Sequence[Subscription]) -> tuple[dict, dict[i
     return questions, author_key
 
 
-def read_decisions(answers, subscriptions: Sequence[Subscription], author_key: dict[int, str], round: int) -> list[Decision]:
+def read_decisions(
+    answers, subscriptions: Sequence[Subscription], author_key: dict[int, str], round: int
+) -> list[Decision]:
     decisions = []
     for sub in subscriptions:
         choice = answers.choices[f"sub_{sub.id}"]
@@ -186,17 +190,25 @@ class JevDecider:
             state=state, questions=questions, model=self._model, extra_headers=headers
         )
         usage = answers.usage
+        # The SDK types token counts as optional; a missing count must not
+        # break matching, but the spend limit would undercount, so say so.
+        input_tokens, output_tokens = usage.input_tokens or 0, usage.output_tokens or 0
+        if usage.input_tokens is None:
+            log.warning("Jev response without input token count; the spend limit misses this request")
         log.info(
             "Jev round %d: %d questions, %d photos, %d input tokens",
-            round, len(questions), len(photos), usage.input_tokens,
+            round,
+            len(questions),
+            len(photos),
+            input_tokens,
         )
         if self._budget is not None:
             await self._budget.record_async(
                 round=round,
                 questions=len(questions),
                 photos=len(photos),
-                input_tokens=usage.input_tokens,
-                output_tokens=usage.output_tokens,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
             )
         return read_decisions(answers, subscriptions, author_key, round=round)
 
