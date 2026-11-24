@@ -73,7 +73,8 @@ def test_decision_rules(author_p, choice, matched, needs_photos):
 def test_an_unsure_fits_is_not_a_match():
     """Real chat: «Румбокс» came back as fits for a console query with P(fits) 0.25."""
     assert not Decision(1, 0.94, "fits", 0.25, 1, p_fits=0.33).matched
-    assert Decision(1, 0.94, "fits", 0.9, 1, p_fits=0.5).matched
+    assert not Decision(1, 0.94, "fits", 0.6, 1, p_fits=0.6).matched
+    assert Decision(1, 0.94, "fits", 0.9, 1, p_fits=0.7).matched
 
 
 class FakeClient:

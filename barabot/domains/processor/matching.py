@@ -59,9 +59,11 @@ UNCLEAR = "unclear"
 UNCLEAR_DESCRIPTION = "not enough information to decide"
 
 AUTHOR_MIN = 0.6  # author noul probability needed for a match
-# Jev picks the most likely option even when it is unsure. On real chats the
-# false matches had P(fits) <= 0.42 while real ones were mostly >= 0.8.
-FITS_MIN = 0.5
+# Jev picks the most likely option even when it is unsure. On two real chats
+# every match below 0.65 was false (adult trousers as kids' clothes, a T-shirt
+# as headphones) and answers near 0.5 flip between runs. Matches store the raw
+# probabilities, so this threshold can be re-tuned offline on collected data.
+FITS_MIN = 0.65
 
 # Jev's hard image limits (docs.typesafe.ai/images), and what we choose to send.
 # 800 px is the size Telegram keeps as "x"; it measured ~1300 input tokens and
