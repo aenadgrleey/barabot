@@ -90,7 +90,7 @@ def test_headless_setup_applies_complete_groups_and_rejects_partial_group(
                 "TELEGRAM_BACKEND": "telethon",
                 "API_ID": "7",
                 "API_HASH": VALID_API_HASH,
-                "OPENAI_API_KEY": "key",
+                "TYPESAFE_API_KEY": "key",
                 "BOT_TOKEN": "token",
             },
             input_func=_fail,
@@ -179,13 +179,13 @@ def test_gateway_setup_and_check_need_no_local_telegram_files(tmp_path, monkeypa
     monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(cli, "PROJECT_ROOT", tmp_path)
     monkeypatch.setenv("BARABOT_ENV", "prod")
-    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test")
     monkeypatch.delenv("API_ID", raising=False)
     monkeypatch.delenv("API_HASH", raising=False)
 
     result = asyncio.run(setup.setup(
         root=tmp_path, headless=True,
-        environ={"BARABOT_ENV": "prod", "TELEGRAM_BACKEND": "tgmux", "OPENAI_API_KEY": "test", "BOT_TOKEN": "token"},
+        environ={"BARABOT_ENV": "prod", "TELEGRAM_BACKEND": "tgmux", "TYPESAFE_API_KEY": "test", "BOT_TOKEN": "token"},
         bot_authorize=lambda token, path: path.write_text(token),
     ))
     assert result == 0

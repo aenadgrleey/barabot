@@ -49,7 +49,7 @@
 <main>
 
 <h1>Barabot architecture</h1>
-<p class="status">This is the agreed design. Implemented so far: ingestion and steps 1 and 2 of <code>process_listing</code>. We checked DBOS behavior in a spike on DBOS 3.6.0 with SQLite, summarized in "DBOS findings" below.</p>
+<p class="status">This is the agreed design. Implemented so far: ingestion, photo download, and steps 1 to 3 of <code>process_listing</code>: assembly, versions and subscription matching with TypeSafe Jev. Routing and notifications are next. We checked DBOS behavior in a spike on DBOS 3.6.0 with SQLite, summarized in "DBOS findings" below.</p>
 
 <h2>Diagram</h2>
 <svg viewBox="0 0 700 540" role="img" aria-label="Barabot components and data flow">
@@ -81,7 +81,7 @@
   <text class="h" x="64" y="252">process_listing(key, rev)</text><text class="c" x="64" y="268">id listing:{key}:{rev}</text>
   <text class="m" x="64" y="290">1. assemble from messages, hash</text>
   <text class="m" x="64" y="308">2. save version (compare-and-set)</text>
-  <text class="m" x="64" y="326">3. embedding via queue</text>
+  <text class="m" x="64" y="326">3. match subscriptions (Jev)</text>
   <text class="m" x="64" y="344">4. route:</text>
   <text class="m" x="76" y="360">matches, never sent → new</text>
   <text class="m" x="76" y="374">matches, sent → updated</text>
@@ -134,9 +134,9 @@
   <tr><td><code>BotService</code></td><td>Service</td><td>Bot API connection, message router, command and agent modes, subscription functions</td></tr>
   <tr><td><code>MiniAppService</code></td><td>Service</td><td>HTTP server for the Telegram Mini App, serving the static page and <code>/api/*</code></td></tr>
   <tr><td>DBOS</td><td>Infrastructure</td><td>Workflow state in its own SQLite database at <code>data/dbos.sqlite</code>. We use SQLite in production too because load is small.</td></tr>
-  <tr><td>Processing</td><td>DBOS workflows and steps</td><td>Listing assembly, embeddings, and notification routing</td></tr>
+  <tr><td>Processing</td><td>DBOS workflows and steps</td><td>Listing assembly, subscription matching, and notification routing</td></tr>
 </table>
-<p>The processor is no longer a service. Its logic now lives in DBOS workflow steps and an embedding queue. The three services never call each other directly. They meet only through DBOS and the database.</p>
+<p>The processor is no longer a service. Its logic now lives in DBOS workflow steps. The three services never call each other directly. They meet only through DBOS and the database.</p>
 
 <h2>Database tables</h2>
 <p>Application data lives in SQLite at <code>data/barabot.sqlite</code>. DBOS keeps its own system database separate.</p>
@@ -144,7 +144,8 @@
   <tr><th>Table</th><th>Written by</th><th>Read by</th><th>What each row stores</th></tr>
   <tr><td><code>messages</code></td><td>Scraper</td><td>Processing</td><td>One Telegram message: <code>chat_id</code>, <code>msg_id</code>, <code>grouped_id</code>, <code>sender_id</code>, <code>date</code>, <code>text</code>, <code>media</code>, <code>deleted</code></td></tr>
   <tr><td><code>listings</code></td><td>Scraper writes <code>rev</code>. Processing writes content and <code>version</code>.</td><td>Processing, bot</td><td>One listing: key, <code>rev</code>, assembled text and media, content hash, <code>version</code>, removed flag</td></tr>
-  <tr><td><code>subscriptions</code></td><td>Bot</td><td>Processing</td><td>One user search subscription</td></tr>
+  <tr><td><code>subscriptions</code>, <code>subscription_chats</code></td><td>Bot</td><td>Processing</td><td>One user subscription: <code>author</code> (what the author of a wanted message does), optional <code>author_not</code> (the mirror role that must not match), <code>query</code> (what the message is about), and the chats it watches</td></tr>
+  <tr><td><code>matches</code></td><td>Processing</td><td>Bot</td><td>One check of a listing version against a subscription: author probability, Jev answer (<code>fits</code>, <code>does_not_fit</code>, <code>unclear</code>), round, matched flag</td></tr>
   <tr><td><code>deliveries</code></td><td>Bot</td><td>Processing</td><td>What the bot sent to a user: <code>listing_key</code>, <code>user_id</code>, <code>version</code>, <code>bot_message_id</code></td></tr>
 </table>
 <p>Every listing has a stable key. For an album, the key is <code>(chat_id, grouped_id)</code>. For a single message, it is <code>(chat_id, msg_id)</code>. The key does not depend on which messages of the album are still alive, so deleting the first photo does not move the listing.</p>
@@ -174,15 +175,25 @@
 
 <h2>Workflow <code>process_listing(key, rev)</code></h2>
 <p>In code this is <code>ListingProcessor.process</code>, a method of a DBOS configured instance. Its dependencies, the database path and debounce delay, are injected through the constructor instead of module globals. DBOS stores the class name and <code>config_name</code> with every run and finds the instance by them when it recovers runs after a restart. So <code>__main__</code> constructs the processor before <code>DBOS.launch()</code> and registers its queue after, in <code>open()</code>. The class name is pinned as <code>listing_processor</code> because renaming it would orphan pending runs.</p>
-<p>This workflow turns saved Telegram messages into a listing, generates its embedding, and decides who should be notified. Each numbered item is a DBOS step. Steps run at least once, so each step is idempotent.</p>
+<p>This workflow turns saved Telegram messages into a listing, matches it against subscriptions, and decides who should be notified. Each numbered item is a DBOS step. Steps run at least once, so each step is idempotent.</p>
 <ol>
   <li><strong>Assemble and hash.</strong> Read live rows from <code>messages</code>, join captions in <code>msg_id</code> order, and collect media. Compute the content hash. If the hash has not changed, stop.</li>
   <li><strong>Save the new version.</strong> Write the new content and increment <code>version</code> using compare-and-set with <code>WHERE version = :seen</code>. If no live rows remain, mark the listing as removed.</li>
-  <li><strong>Generate embedding.</strong> Run embedding as a child workflow on an embedding queue with a concurrency limit. This replaces the old <code>EMBEDDING_CONCURRENCY</code> semaphore. The step uses <code>preemptible=True</code> so cancellation interrupts the API call instead of waiting for it.</li>
+  <li><strong>Match subscriptions.</strong> Load the listing text, its downloaded photos and the active subscriptions of its chat, then ask TypeSafe Jev. Round 1 sends only the text. If some subscription passed its author role but answered <code>unclear</code>, and the listing has photos, round 2 asks those subscriptions again with the photos; the decider sends at most as many as its <code>ImageSpec</code> allows. Save one <code>matches</code> row per subscription and set <code>decided_version</code>. Jev steps are <code>preemptible=True</code>, so cancellation interrupts the HTTP request, and retry transient API errors durably. If Jev rejects the photos, the text answers stand.</li>
   <li><strong>Route to subscribers.</strong> Read <code>subscriptions</code> and <code>deliveries</code> and compute the event for each affected user. The table below lists all five cases.</li>
   <li><strong>Enqueue notifications.</strong> Enqueue <code>bot.notify(user, kind, key, version)</code> on <code>notify_queue</code> with workflow ID <code>notify:{key}:{rev}:{user}</code>.</li>
 </ol>
-<p>Step 1 exits as stale if <code>listings.rev</code> no longer equals the run's <code>rev</code>, and step 2 adds <code>AND rev = :rev</code> to its compare-and-set. Before steps 3 and 5, which have side effects, the workflow checks that its version is still the latest and exits quietly if not. Cancellation stops a stale run as early as possible. The version check covers what cancellation misses.</p>
+<p>Step 1 exits as stale if <code>listings.rev</code> no longer equals the run's <code>rev</code>, and step 2 adds <code>AND rev = :rev</code> to its compare-and-set. A run can stop after step 2 and before step 3; the next run then sees an unchanged hash. So "unchanged" also requires <code>decided_version = version</code>, otherwise the run goes straight to step 3 for the current version. Before steps 3 and 5, which have side effects, the workflow checks that its version is still the latest and exits quietly if not. Cancellation stops a stale run as early as possible. The version check covers what cancellation misses.</p>
+
+<p><strong>How step 3 asks Jev</strong></p>
+<p>Every question is about the message alone, never about the subscriber. When the model had to reason about the subscriber's side ("can the author give the subscriber what they want"), it judged by topic and confused landlords with tenants and employers with job seekers. Questions about the message itself it answers reliably.</p>
+<ul>
+  <li>One <code>noul</code> per unique author role: <code>The message author {author}</code>, with the optional <code>author_not</code> as its "false" description. That description is what separates mirror roles: for "ищет жильё" it moved the gap between yes and no messages from −0.07 to about 0.7.</li>
+  <li>One <code>choice</code> per subscription: <code>The message fits this request: {query}</code>, options <code>fits</code>, <code>does_not_fit</code>, <code>unclear</code> ("not enough information to decide").</li>
+  <li>Templates are English constants in <code>processor/matching.py</code>; the subscription texts inside them stay in the subscriber's language. English and Russian templates scored the same on the bench.</li>
+  <li>A subscription matches when its author role is at least 0.6 and its answer is <code>fits</code>. A request holds at most 400 questions.</li>
+</ul>
+<p>The scraper downloads photos at ingest, because only it holds a Telegram connection. Which sizes are worth downloading depends on the model, but the scraper does not know the model: <code>__main__</code> builds the two together in <code>_build_matching</code>, <code>JevDecider</code> and a <code>PhotoDownloader</code> configured by <code>JEV_IMAGES</code>, an <code>ImageSpec</code> with Jev's hard limits, a target long side and how many photos to send. The scraper takes the smallest size Telegram keeps that reaches the target, not the largest one allowed, because image tokens grow with pixels. For Jev the target is 800 px (Telegram's "x" size, about 1300 input tokens) and up to four photos; both are open to experiment. These choices come from the barabot-jev-spike bench in agent-home <code>.experiments</code>: on 25 synthetic messages and 14 subscriptions the final wording made no errors. Real chat data is still to be checked.</p>
 
 <p><strong>Routing rules for step 4</strong></p>
 <table>

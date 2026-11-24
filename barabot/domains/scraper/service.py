@@ -1,12 +1,14 @@
 """Own the scraper's Telegram connection for the lifetime of the service.
 
 Live NewMessage, MessageEdited and MessageDeleted events and the startup
-backfill all go through `MessageIngest`.
+backfill all go through `MessageIngest`. Photos are downloaded before
+ingest, outside its lock, so processing can show them to Jev.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from telethon import TelegramClient, events
@@ -16,13 +18,16 @@ from barabot.core.config import Config
 from barabot.core.setup_hints import SCRAPER_COMMAND, has_local_scraper_authorization
 from barabot.domains.scraper.ingest import MessageIngest
 from barabot.domains.scraper.model.event import DeletedMessages, SeenMessage
+from barabot.domains.scraper.photos import PhotoDownloader
 
 log = logging.getLogger(__name__)
 
 
 class ScraperService:
-    def __init__(self, cfg: Config, ingest: MessageIngest) -> None:
+    def __init__(self, cfg: Config, ingest: MessageIngest, photos: PhotoDownloader | None = None) -> None:
+        """Without a photo downloader, photos are stored as descriptors only."""
         self.cfg = cfg
+        self._photos = photos
         self.client: TelegramClient | None = None
         self._ingest = ingest
         self._chats: frozenset[int] = frozenset(cfg.watch_chats)
@@ -75,12 +80,27 @@ class ScraperService:
     async def _on_message(self, event: events.NewMessage.Event) -> None:
         seen = to_seen(event.message)
         if seen is not None and seen.chat_id in self._chats:
-            await self._ingest.save_message(seen)
+            await self._ingest.save_message(await self._with_photo(event.message, seen))
 
     async def _on_deleted(self, event: events.MessageDeleted.Event) -> None:
         if event.chat_id is not None and event.chat_id not in self._chats:
             return
         await self._ingest.mark_deleted(DeletedMessages(event.chat_id, list(event.deleted_ids)))
+
+    async def _with_photo(self, msg, seen: SeenMessage) -> SeenMessage:
+        """Add the downloaded file to a photo descriptor; a failed download is not fatal."""
+        if self._photos is None or not seen.media or seen.media[0].get("type") != "photo":
+            return seen
+        try:
+            info = await self._photos.download(self.client, msg)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.warning("Could not download photo of %s/%s", seen.chat_id, seen.msg_id, exc_info=True)
+            return seen
+        if info is None:
+            return seen
+        return replace(seen, media=[{**seen.media[0], **info}])
 
     async def _run_backfill(self) -> None:
         """Re-touch recent messages so listings missed while down get processed.
@@ -97,7 +117,7 @@ class ScraperService:
                         break
                     seen = to_seen(msg)
                     if seen is not None:
-                        await self._ingest.save_message(seen)
+                        await self._ingest.save_message(await self._with_photo(msg, seen))
                         count += 1
             except asyncio.CancelledError:
                 raise

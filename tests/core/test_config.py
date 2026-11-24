@@ -13,15 +13,9 @@ _ENV_VARS = (
     "BARABOT_ENV",
     "API_ID",
     "API_HASH",
-    "OPENAI_API_KEY",
-    "EMBEDDING_MODEL",
-    "EMBEDDING_URL",
-    "SIMILARITY_THRESHOLD",
     "WATCH_CHATS",
     "LOG_LEVEL",
-    "EMBEDDING_CONCURRENCY",
-    "EMBEDDING_RETRIES",
-    "EMBEDDING_TIMEOUT",
+    "TYPESAFE_API_KEY",
 )
 
 
@@ -44,7 +38,7 @@ def _set_valid_environment(monkeypatch: pytest.MonkeyPatch, environment: str) ->
     monkeypatch.setenv("BARABOT_ENV", environment)
     monkeypatch.setenv("API_ID", "12345")
     monkeypatch.setenv("API_HASH", "a" * 32)
-    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-typesafe-key")
 
 
 def test_load_merges_domain_files_before_process_fallback(
@@ -61,14 +55,12 @@ def test_load_merges_domain_files_before_process_fallback(
             "API_HASH": "a" * 32,
         },
         project_root / "config" / "processor.env": {
-            "OPENAI_API_KEY": "processor-key",
-            "EMBEDDING_MODEL": "domain-model",
+            "TYPESAFE_API_KEY": "processor-key",
         },
         project_root / "config" / ".env": {
             "BARABOT_ENV": "develop",
             "API_ID": "99999",
-            "OPENAI_API_KEY": "legacy-key",
-            "EMBEDDING_MODEL": "legacy-model",
+            "TYPESAFE_API_KEY": "legacy-key",
             "LOG_LEVEL": "DEBUG",
         },
     }
@@ -85,8 +77,7 @@ def test_load_merges_domain_files_before_process_fallback(
     loaded = config.load()
 
     assert loaded.api_id == 12345
-    assert loaded.openai_api_key == "processor-key"
-    assert loaded.embedding_model == "domain-model"
+    assert loaded.typesafe_api_key == "processor-key"
     assert loaded.log_level == "WARNING"
 
 

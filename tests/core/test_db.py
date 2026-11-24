@@ -61,3 +61,25 @@ def test_hot_queries_use_their_index(conn, query, index):
     plan = " ".join(row["detail"] for row in conn.execute(f"EXPLAIN QUERY PLAN {query}"))
     assert f"USING INDEX {index}" in plan
     assert "TEMP B-TREE" not in plan
+
+
+def test_migrate_adds_columns_to_tables_created_by_older_code(tmp_path: Path):
+    path = tmp_path / "old.sqlite"
+    old = connect(path)
+    old.execute(
+        "CREATE TABLE listings (chat_id INTEGER, album INTEGER, ref INTEGER, rev INTEGER, text TEXT, "
+        "media TEXT, content_hash TEXT, version INTEGER NOT NULL DEFAULT 0, removed INTEGER NOT NULL DEFAULT 0, "
+        "PRIMARY KEY (chat_id, album, ref))"
+    )
+    old.execute("INSERT INTO listings (chat_id, album, ref, rev, version) VALUES (1, 0, 5, 3, 2)")
+    old.close()
+
+    migrate(path)
+    migrate(path)  # idempotent
+
+    conn = connect(path)
+    row = conn.execute("SELECT version, decided_version FROM listings").fetchone()
+    tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    conn.close()
+    assert tuple(row) == (2, 0)
+    assert {"subscriptions", "subscription_chats", "matches"} <= tables

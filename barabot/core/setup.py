@@ -31,15 +31,7 @@ BotAuthorize = Callable[[str, Path], Any]
 ConfigLoader = Callable[[], Any]
 HEADLESS_COMMAND = ".venv/bin/python -m barabot setup --headless"
 
-PROCESSOR_NAMES = (
-    "OPENAI_API_KEY",
-    "EMBEDDING_MODEL",
-    "EMBEDDING_URL",
-    "SIMILARITY_THRESHOLD",
-    "EMBEDDING_CONCURRENCY",
-    "EMBEDDING_RETRIES",
-    "EMBEDDING_TIMEOUT",
-)
+PROCESSOR_NAMES = ("TYPESAFE_API_KEY",)
 
 
 def _default_scraper_credentials(
@@ -205,8 +197,8 @@ async def setup(
                 return _headless_failure("scraper", name)
 
         processor_values = _supplied(source, PROCESSOR_NAMES)
-        if processor_values and not source.get("OPENAI_API_KEY", "").strip():
-            return _headless_failure("processor", "OPENAI_API_KEY")
+        if processor_values and not source.get("TYPESAFE_API_KEY", "").strip():
+            return _headless_failure("processor", "TYPESAFE_API_KEY")
         if processor_values and (force or not processor_path.exists()):
             try:
                 from barabot.domains.processor.configure import configure_from_mapping
@@ -215,7 +207,7 @@ async def setup(
             except (KeyboardInterrupt, EOFError):
                 raise
             except BaseException as exc:
-                name = next((item for item in PROCESSOR_NAMES if item in str(exc)), "OPENAI_API_KEY")
+                name = next((item for item in PROCESSOR_NAMES if item in str(exc)), "TYPESAFE_API_KEY")
                 return _headless_failure("processor", name)
 
         bot_values = _supplied(source, ("BOT_TOKEN",))

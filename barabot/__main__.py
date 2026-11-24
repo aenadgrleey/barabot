@@ -56,8 +56,10 @@ from barabot.core.setup_hints import (
 )
 from barabot.domains.bot.service import BotService
 from barabot.domains.processor.listing import ListingProcessor
+from barabot.domains.processor.matching import JEV_IMAGES, JevDecider
 from barabot.domains.scraper import ScraperService
 from barabot.domains.scraper.ingest import MessageIngest
+from barabot.domains.scraper.photos import PhotoDownloader
 
 log = logging.getLogger("barabot")
 
@@ -106,16 +108,27 @@ def _check_config() -> int:
         return 2
     print(
         f"barabot config ok: scraper={cfg.telegram.backend} "
-        f"chats={len(cfg.watch_chats)} threshold={cfg.similarity_threshold} "
-        f"log_level={cfg.log_level}"
+        f"chats={len(cfg.watch_chats)} log_level={cfg.log_level}"
     )
     return 0
 
 
-def _build_services(cfg: Config, processor: ListingProcessor) -> list[Service]:
+def _build_matching(cfg: Config) -> tuple[JevDecider, PhotoDownloader]:
+    """The decider and the photo downloader that suits it are chosen together.
+
+    Switching models means changing this pair: the photo downloader gets
+    the decider's ImageSpec here, so the scraper never sees the decider.
+    """
+    from typesafe_sdk import AsyncTypeSafeClient
+
+    decider = JevDecider(AsyncTypeSafeClient(api_key=cfg.typesafe_api_key))
+    return decider, PhotoDownloader(JEV_IMAGES, cfg.media_dir)
+
+
+def _build_services(cfg: Config, processor: ListingProcessor, photos: PhotoDownloader) -> list[Service]:
     """Construct all services. Add a new domain by adding one line here."""
     return [
-        ScraperService(cfg, MessageIngest(cfg.db_path, processor.schedule)),
+        ScraperService(cfg, MessageIngest(cfg.db_path, processor.schedule), photos),
         BotService(cfg, client=None),
     ]
 
@@ -123,7 +136,7 @@ def _build_services(cfg: Config, processor: ListingProcessor) -> list[Service]:
 async def _run_barabot() -> None:
     # Validate config BEFORE spinning up the event loop and TaskGroup.
     # A bad .env should fail with a clear message, not crash inside
-    # Telethon/embed code 5s into startup. _load_config_or_exit() prints
+    # Telethon or processing code 5s into startup. _load_config_or_exit() prints
     # the specific reason and exits non-zero.
     cfg = _load_config_or_exit()
     _configure_logging(cfg.log_level)
@@ -133,14 +146,16 @@ async def _run_barabot() -> None:
     stop = asyncio.Event()
     services: list[Service] = []
     dbos_up = False
+    decider: JevDecider | None = None
     try:
         db.migrate(cfg.db_path)
+        decider, photos = _build_matching(cfg)
         # Before launch: DBOS finds the instance by name when it recovers runs.
-        processor = ListingProcessor(cfg.db_path)
+        processor = ListingProcessor(cfg.db_path, cfg.media_dir, decider)
         durable.launch(cfg.dbos_path)
         dbos_up = True
         await processor.open()
-        services = _build_services(cfg, processor)
+        services = _build_services(cfg, processor, photos)
 
         # Start every service before any can race. If one raises,
         # we tear down the already-started ones in reverse order.
@@ -182,9 +197,47 @@ async def _run_barabot() -> None:
                 log.error("error stopping %s: %s", type(svc).__name__, exc)
         if dbos_up:
             durable.shutdown()
+        if decider is not None:
+            await decider.aclose()
         _remove_pid(cfg.pid_path)
         _release_lock(lock_fd, cfg.lock_path)
     log.info("barabot stopped cleanly")
+
+
+def _subscription_command(args: argparse.Namespace) -> int:
+    from barabot.core.config import DATA_DIR
+    from barabot.domains.bot import subscriptions
+
+    path = DATA_DIR / "barabot.sqlite"
+    db.migrate(path)
+    if args.subscription_cmd == "add":
+        try:
+            sub_id = subscriptions.add(
+                path,
+                user_id=args.user,
+                author=args.author,
+                author_not=args.author_not,
+                query=args.query,
+                chats=args.chat,
+            )
+        except ValueError as exc:
+            print(f"subscription not created: {exc}", file=sys.stderr)
+            return 2
+        print(f"subscription {sub_id} created")
+        return 0
+    if args.subscription_cmd == "list":
+        for row in subscriptions.list_all(path):
+            state = "active" if row.active else "off"
+            not_part = f" | not: {row.author_not}" if row.author_not else ""
+            chats = ",".join(str(c) for c in row.chats)
+            print(f"{row.id:>4} {state:6} user={row.user_id} chats={chats}\n"
+                  f"     author: {row.author}{not_part}\n     query: {row.query}")
+        return 0
+    if subscriptions.deactivate(path, args.id):
+        print(f"subscription {args.id} deactivated")
+        return 0
+    print(f"no active subscription {args.id}", file=sys.stderr)
+    return 1
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -208,7 +261,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     p_processor = sub.add_parser("processor", help="Manage the processor.")
     processor_sub = p_processor.add_subparsers(dest="processor_cmd", required=True)
-    processor_sub.add_parser("configure", help="Configure embedding provider settings.")
+    processor_sub.add_parser("configure", help="Store the TypeSafe API key used to match subscriptions.")
+
+    p_subs = sub.add_parser("subscription", help="Manage subscriptions until the bot does.")
+    subs_sub = p_subs.add_subparsers(dest="subscription_cmd", required=True)
+    p_add = subs_sub.add_parser("add", help="Create a subscription.")
+    p_add.add_argument("--user", type=int, required=True, help="Telegram user ID to notify")
+    p_add.add_argument("--chat", type=int, action="append", required=True, help="Chat ID; repeat for several")
+    p_add.add_argument("--author", required=True, help="What the author of a wanted message does")
+    p_add.add_argument("--author-not", help="Mirror role that must not match")
+    p_add.add_argument("--query", required=True, help="What the message is about")
+    subs_sub.add_parser("list", help="List subscriptions.")
+    p_remove = subs_sub.add_parser("remove", help="Deactivate a subscription.")
+    p_remove.add_argument("id", type=int)
 
     p_bot = sub.add_parser("bot", help="Manage the Telegram bot.")
     bot_sub = p_bot.add_subparsers(dest="bot_cmd", required=True)
@@ -259,6 +324,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if saved_path == expected_path:
             print(f"Next: {next_setup_command(PROJECT_ROOT)}")
         return 0
+
+    if args.cmd == "subscription":
+        return _subscription_command(args)
 
     if args.cmd == "bot" and args.bot_cmd == "auth":
         from barabot.domains.bot.auth import AuthorizationError, authorize

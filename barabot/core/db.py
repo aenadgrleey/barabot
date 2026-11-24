@@ -2,8 +2,10 @@
 
 DBOS keeps its own system database next to it. This one holds the
 domain tables: `messages` written by the scraper, `listings` whose `rev`
-the scraper bumps and whose content and `version` processing writes.
-`subscriptions` and `deliveries` arrive with the bot slice.
+the scraper bumps and whose content and `version` processing writes,
+`subscriptions` with their chats written by the bot, and `matches`, the
+decision processing makes for every listing version and subscription.
+`deliveries` arrives with the notification slice.
 
 A listing's identity is derived by the schema, not by Python. Each
 message row carries generated `listing_album` and `listing_ref` columns:
@@ -52,9 +54,55 @@ CREATE TABLE IF NOT EXISTS listings (
     content_hash TEXT,
     version      INTEGER NOT NULL DEFAULT 0,
     removed      INTEGER NOT NULL DEFAULT 0,
+    -- version whose matches are saved; lags version if a run stopped between steps
+    decided_version INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (chat_id, album, ref)
 );
+
+-- A subscription, in the subscriber's words:
+--   author      what the author of a wanted message does ("сдаёт жильё")
+--   author_not  optional: the mirror role that must not match ("ищет жильё")
+--   query       what the message is about ("квартира с балконом до 20 000 Kč")
+CREATE TABLE IF NOT EXISTS subscriptions (
+    id         INTEGER PRIMARY KEY,
+    user_id    INTEGER NOT NULL,
+    author     TEXT    NOT NULL,
+    author_not TEXT,
+    query      TEXT    NOT NULL,
+    active     INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+-- A subscription only sees messages from the chats its user picked.
+CREATE TABLE IF NOT EXISTS subscription_chats (
+    subscription_id INTEGER NOT NULL REFERENCES subscriptions (id) ON DELETE CASCADE,
+    chat_id         INTEGER NOT NULL,
+    PRIMARY KEY (subscription_id, chat_id)
+);
+CREATE INDEX IF NOT EXISTS subscription_chats_by_chat ON subscription_chats (chat_id);
+
+-- One row per listing version and subscription that processing checked.
+CREATE TABLE IF NOT EXISTS matches (
+    chat_id         INTEGER NOT NULL,
+    album           INTEGER NOT NULL,
+    ref             INTEGER NOT NULL,
+    version         INTEGER NOT NULL,
+    subscription_id INTEGER NOT NULL,
+    author_p        REAL    NOT NULL,
+    choice          TEXT    NOT NULL,
+    confidence      REAL    NOT NULL,
+    round           INTEGER NOT NULL,
+    matched         INTEGER NOT NULL,
+    decided_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (chat_id, album, ref, version, subscription_id)
+);
 """
+
+# Columns added after a table first shipped: CREATE TABLE IF NOT EXISTS
+# does not touch existing tables, so migrate() adds them.
+_ADDED_COLUMNS = {
+    "listings": {"decided_version": "INTEGER NOT NULL DEFAULT 0"},
+}
 
 
 class ListingKey(NamedTuple):
@@ -78,6 +126,7 @@ def connect(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path, timeout=30.0, isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 30000")
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
@@ -86,6 +135,11 @@ def migrate(path: Path) -> None:
     try:
         conn.execute("PRAGMA journal_mode = WAL")
         conn.executescript(SCHEMA)
+        for table, columns in _ADDED_COLUMNS.items():
+            present = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+            for column, decl in columns.items():
+                if column not in present:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
     finally:
         conn.close()
 

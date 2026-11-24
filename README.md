@@ -4,7 +4,7 @@ Barabot is a Python service for finding relevant listings in selected Telegram c
 
 ## Architecture
 
-Barabot runs in one process: a scraper and a bot service on one asyncio loop, with background processing in [DBOS](https://docs.dbos.dev) workflows. The scraper owns the Telegram user connection and writes messages to `data/barabot.sqlite`. Each event schedules a debounced `process_listing` run that assembles the listing and saves a new version. DBOS keeps workflow state in `data/dbos.sqlite`. The processor domain owns the embedding settings. The bot domain owns the BotFather token. The scraper session and bot token belong to separate Telegram identities. The full design, including what is not built yet, is in [docs/architecture.html](docs/architecture.html).
+Barabot runs in one process: a scraper and a bot service on one asyncio loop, with background processing in [DBOS](https://docs.dbos.dev) workflows. The scraper owns the Telegram user connection and writes messages to `data/barabot.sqlite`. Each event schedules a debounced `process_listing` run that assembles the listing, saves a new version and checks it against the subscriptions of its chat with [TypeSafe Jev](https://docs.typesafe.ai). Jev first reads the text; if a subscription comes back unclear and the listing has photos, it asks again with them. Decisions go to the `matches` table. DBOS keeps workflow state in `data/dbos.sqlite`. The processor domain owns the TypeSafe API key. The bot domain owns the BotFather token. The scraper session and bot token belong to separate Telegram identities. The full design, including what is not built yet, is in [docs/architecture.html](docs/architecture.html).
 
 At startup, Barabot loads the configuration, takes an exclusive lock on `data/barabot.lock` and writes its PID to `data/barabot.pid`. It migrates the app database, launches DBOS, then starts the scraper and bot and runs them in one `asyncio.TaskGroup`. If one task fails, the group cancels the others. On `SIGINT` or `SIGTERM`, the services stop in reverse order and DBOS shuts down last. See the [entry point](barabot/__main__.py) and [service contract](barabot/core/service.py).
 
@@ -22,7 +22,7 @@ source .venv/bin/activate
 | Shared gateway | `pip install -r requirements-tgmux.txt` | The [tgmux gateway](https://github.com/aenadgrleey/tgmux) holds the Telegram session. Barabot connects to its Unix socket as integration `barabot` on the default instance. |
 | Direct Telethon | `pip install -r requirements.txt` | Barabot opens its own session in `config/scraper.session`. Get the application credentials from [my.telegram.org](https://my.telegram.org). |
 
-For the gateway, run `python -m barabot setup` under the same OS user as tgmux. For a direct connection, run `TELEGRAM_BACKEND=telethon python -m barabot setup` on first setup, then `python -m barabot setup scraper` to authorize the local session with your phone number, login code and 2FA if enabled. Setup also asks for an embeddings API key and a BotFather token.
+For the gateway, run `python -m barabot setup` under the same OS user as tgmux. For a direct connection, run `TELEGRAM_BACKEND=telethon python -m barabot setup` on first setup, then `python -m barabot setup scraper` to authorize the local session with your phone number, login code and 2FA if enabled. Setup also asks for a TypeSafe API key and a BotFather token.
 
 ```bash
 python -m barabot run --check
@@ -40,10 +40,24 @@ Set `TELEGRAM_BACKEND` in `config/.env`. An exported environment variable takes 
 | `config/.env` | Deployment mode (`BARABOT_ENV=develop` or `prod`), Telegram backend, chat IDs, backfill depth and log level |
 | `config/scraper.env` | `API_ID` and `API_HASH` for direct Telethon |
 | `config/scraper.session` | Authorized local Telethon session |
-| `config/processor.env` | Embeddings API key, endpoint, model and similarity settings |
+| `config/processor.env` | `TYPESAFE_API_KEY` for subscription matching |
 | `config/bot.token` | Verified BotFather token |
 
-To change the embedding provider, run `python -m barabot processor configure`. For unattended setup, supply `BARABOT_ENV`, `TELEGRAM_BACKEND`, `OPENAI_API_KEY` and `BOT_TOKEN` in the environment and run `python -m barabot setup --headless`. For direct Telethon, also supply `API_ID` and `API_HASH`, then authorize the session interactively once. See the [environment template](.env.example).
+To replace the TypeSafe key, run `python -m barabot processor configure`. For unattended setup, supply `BARABOT_ENV`, `TELEGRAM_BACKEND`, `TYPESAFE_API_KEY` and `BOT_TOKEN` in the environment and run `python -m barabot setup --headless`. For direct Telethon, also supply `API_ID` and `API_HASH`, then authorize the session interactively once. See the [environment template](.env.example).
+
+## Subscriptions
+
+A subscription has three parts, all in plain words. `author` is what the author of a wanted message does, `query` is what the message is about, and the optional `author-not` names the role that must not match. Without it Jev confuses roles that share a topic, such as landlord and tenant. A subscription only sees the chats it lists. Until the bot manages subscriptions, use the CLI:
+
+```bash
+python -m barabot subscription add --user 123456789 --chat -1001234567890 \
+  --author "сдаёт жильё" --author-not "автор ищет жильё, продаёт что-то или пишет о другом" \
+  --query "квартира от 2 комнат, до 20 000 Kč в месяц"
+python -m barabot subscription list
+python -m barabot subscription remove 1
+```
+
+A listing matches when Jev gives the author role at least 0.6 and answers `fits` for the query. Every check, matched or not, is stored in `matches` with the probabilities, so you can see why a listing was or was not sent.
 
 ## Deploy
 
