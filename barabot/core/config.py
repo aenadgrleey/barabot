@@ -11,7 +11,7 @@ from typing import ClassVar
 
 from dotenv import load_dotenv
 
-from barabot.core.telegram import TelegramBackend, TelegramTransport
+from barabot.core.telegram import TelegramBackend, TelegramTransport, telegram_env_path
 
 # barabot/core/config.py → barabot/core → barabot → <project>
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -56,8 +56,8 @@ class Config:
 
     telegram: TelegramTransport
     environment: DeployEnvironment
-    api_id: int | None
-    api_hash: str | None
+    api_id: int  # with api_hash: the Telegram application of the bot and a local scraper session
+    api_hash: str
     watch_chats: list[int]
     log_level: str
     backfill_hours: int
@@ -67,6 +67,7 @@ class Config:
     stats_interval_minutes: int  # digest period; 0 turns the digest off
 
     scraper_session_path: Path = field(default_factory=lambda: PROJECT_ROOT / "config" / "scraper.session")
+    bot_session_path: Path = field(default_factory=lambda: PROJECT_ROOT / "config" / "bot.session")
     db_path: Path = field(default_factory=lambda: PROJECT_ROOT / "data" / "barabot.sqlite")
     dbos_path: Path = field(default_factory=lambda: PROJECT_ROOT / "data" / "dbos.sqlite")
     media_dir: Path = field(default_factory=lambda: PROJECT_ROOT / "data" / "media")
@@ -92,8 +93,9 @@ def _non_negative(value, name: str):
 
 def load() -> Config:
     transport = TelegramBackend.configured(PROJECT_ROOT).resolve()
-    if transport.uses_local_session:
-        load_dotenv(PROJECT_ROOT / "config" / "scraper.env", override=False)
+    # API_ID and API_HASH: the bot's Telethon client always needs them, a
+    # local scraper session too.
+    load_dotenv(telegram_env_path(PROJECT_ROOT / "config"), override=False)
     load_dotenv(PROJECT_ROOT / "config" / "processor.env", override=False)
     load_dotenv(PROJECT_ROOT / "config" / ".env", override=False)
 
@@ -108,12 +110,9 @@ def load() -> Config:
             f"BARABOT_ENV has invalid value {raw_environment!r}; accepted values: {accepted_environments}"
         ) from exc
 
-    api_id = None
-    api_hash = None
-    if transport.uses_local_session:
-        api_id = int(_required("API_ID"))
-        api_hash = _required("API_HASH")
-        _validate_api_hash(api_hash)
+    api_id = int(_required("API_ID"))
+    api_hash = _required("API_HASH")
+    _validate_api_hash(api_hash)
     log_level = os.getenv("LOG_LEVEL", "INFO").upper()
     if log_level not in _VALID_LOG_LEVELS:
         raise RuntimeError(f"LOG_LEVEL must be one of {sorted(_VALID_LOG_LEVELS)}, got {log_level!r}")

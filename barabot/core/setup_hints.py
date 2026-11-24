@@ -7,7 +7,7 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
-from barabot.core.telegram import TelegramBackend, TelegramTransport
+from barabot.core.telegram import TelegramBackend, TelegramTransport, telegram_env_path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -44,10 +44,11 @@ def missing_setup_commands(root: Path, transport: TelegramTransport | None = Non
     config_dir = root / "config"
     commands: list[str] = []
 
-    if not has_deploy_environment(config_dir / ".env"):
+    has_telegram_app = telegram_env_path(config_dir).exists()
+    if not has_deploy_environment(config_dir / ".env") or (not has_telegram_app and not transport.uses_local_session):
         commands.append(SETUP_COMMAND)
     if transport.uses_local_session and (
-        not (config_dir / "scraper.env").exists() or not has_local_scraper_authorization(config_dir / "scraper.session")
+        not has_telegram_app or not has_local_scraper_authorization(config_dir / "scraper.session")
     ):
         commands.append(SCRAPER_COMMAND)
     if not (config_dir / "processor.env").exists():

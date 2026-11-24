@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from barabot.core.setup_hints import has_local_scraper_authorization
+from barabot.core.telegram import telegram_env_path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 ClientFactory = Callable[[str, int, str], Any]
@@ -121,7 +122,7 @@ def _write_credentials(path: Path, api_id: int, api_hash: str) -> None:
     """Atomically replace the credentials file with private permissions."""
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     path.parent.chmod(0o700)
-    descriptor, temporary_name = tempfile.mkstemp(prefix=".scraper.env.", dir=path.parent)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary_path = Path(temporary_name)
     try:
         os.fchmod(descriptor, 0o600)
@@ -168,10 +169,10 @@ async def authorize(
 ) -> None:
     """Authorize the local Telethon session, reusing persisted credentials."""
     config_dir = root / "config"
-    credentials_path = config_dir / "scraper.env"
     session_path = config_dir / "scraper.session"
     config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     config_dir.chmod(0o700)
+    credentials_path = telegram_env_path(config_dir)
 
     credentials = _read_credentials(credentials_path)
     if credentials is None:

@@ -41,10 +41,21 @@ def test_next_setup_command_reaches_ready_only_for_complete_setup(
 ) -> None:
     config = tmp_path / "config"
     config.mkdir()
-    for name in (".env", "scraper.env", "processor.env", "bot.token"):
+    for name in (".env", "telegram.env", "processor.env", "bot.token"):
         (config / name).touch()
 
     (config / ".env").write_text("BARABOT_ENV=develop\n")
     assert setup_hints.next_setup_command(tmp_path) == setup_hints.SCRAPER_COMMAND
     _authorized_session(tmp_path)
     assert setup_hints.next_setup_command(tmp_path) == setup_hints.READY_COMMAND
+
+
+def test_an_older_scraper_env_becomes_telegram_env(tmp_path: Path) -> None:
+    from barabot.core.telegram import telegram_env_path
+
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "scraper.env").write_text("API_ID=1\n")
+    path = telegram_env_path(config)
+    assert path.name == "telegram.env" and path.read_text() == "API_ID=1\n"
+    assert not (config / "scraper.env").exists()

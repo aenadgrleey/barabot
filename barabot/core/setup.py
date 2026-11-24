@@ -21,7 +21,7 @@ from barabot.core.setup_hints import (
     missing_setup_commands,
     next_setup_command,
 )
-from barabot.core.telegram import TelegramBackend
+from barabot.core.telegram import TelegramBackend, telegram_env_path
 
 InputFunction = Callable[[str], str]
 ScraperCredentials = Callable[..., Path]
@@ -149,7 +149,7 @@ async def setup(
     transport = backend.resolve()
     config_dir = root / "config"
     env_path = config_dir / ".env"
-    scraper_path = config_dir / "scraper.env"
+    telegram_path = telegram_env_path(config_dir)
     processor_path = config_dir / "processor.env"
     bot_path = config_dir / "bot.token"
 
@@ -170,23 +170,23 @@ async def setup(
             except OSError:
                 return _headless_failure("environment", *updates)
 
-        scraper_values = transport.uses_local_session and _supplied(source, ("API_ID", "API_HASH"))
-        if scraper_values:
+        telegram_values = _supplied(source, ("API_ID", "API_HASH"))
+        if telegram_values:
             missing = tuple(name for name in ("API_ID", "API_HASH") if not source.get(name, "").strip())
             if missing:
-                return _headless_failure("scraper", *missing)
-        if scraper_values and (force or not scraper_path.exists()):
+                return _headless_failure("telegram", *missing)
+        if telegram_values and (force or not telegram_path.exists()):
             try:
                 from barabot.domains.scraper.login import (
                     configure_credentials_from_mapping,
                 )
 
-                configure_credentials_from_mapping(source, path=scraper_path)
+                configure_credentials_from_mapping(source, path=telegram_path)
             except (KeyboardInterrupt, EOFError):
                 raise
             except BaseException as exc:
                 name = str(exc) if str(exc) in {"API_ID", "API_HASH"} else "API_ID"
-                return _headless_failure("scraper", name)
+                return _headless_failure("telegram", name)
 
         processor_values = _supplied(source, PROCESSOR_NAMES)
         if processor_values and not source.get("TYPESAFE_API_KEY", "").strip():
@@ -227,20 +227,21 @@ async def setup(
                 return _failure("environment", SETUP_COMMAND)
 
         if not transport.uses_local_session:
-            print("Using the tgmux gateway for Telegram authorization.")
-        elif scraper_path.exists() and not force:
-            print("Skip scraper credentials: already configured.")
+            print("Using the tgmux gateway for the scraper session.")
+        # The bot always needs the application credentials; a local scraper session too.
+        if telegram_path.exists() and not force:
+            print("Skip Telegram application credentials: already configured.")
         else:
             try:
                 scraper_credentials(
-                    path=scraper_path,
+                    path=telegram_path,
                     input_func=input_func,
                     secret_input_func=secret_input_func,
                 )
             except (KeyboardInterrupt, EOFError):
                 raise
             except BaseException:
-                return _failure("scraper credentials", SETUP_COMMAND)
+                return _failure("Telegram application credentials", SETUP_COMMAND)
 
         if processor_path.exists() and not force:
             print("Skip processor: already configured.")

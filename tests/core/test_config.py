@@ -49,7 +49,7 @@ def test_load_merges_domain_files_before_process_fallback(
     monkeypatch.setenv("LOG_LEVEL", "WARNING")
     project_root = Path(__file__).resolve().parents[2]
     file_values = {
-        project_root / "config" / "scraper.env": {
+        project_root / "config" / "telegram.env": {
             "API_ID": "12345",
             "API_HASH": "a" * 32,
         },

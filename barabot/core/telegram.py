@@ -12,6 +12,22 @@ from pathlib import Path
 from dotenv import dotenv_values
 from telethon import TelegramClient
 
+TELEGRAM_ENV = "telegram.env"
+_LEGACY_TELEGRAM_ENV = "scraper.env"
+
+
+def telegram_env_path(config_dir: Path) -> Path:
+    """`config/telegram.env`: API_ID and API_HASH of the Telegram application.
+
+    A local scraper session and the bot both use them. Older installs kept
+    them in scraper.env; the first call renames that file.
+    """
+    path = config_dir / TELEGRAM_ENV
+    legacy = config_dir / _LEGACY_TELEGRAM_ENV
+    if not path.exists() and legacy.exists():
+        os.replace(legacy, path)
+    return path
+
 
 class TelegramBackend(StrEnum):
     TGMUX = "tgmux"
