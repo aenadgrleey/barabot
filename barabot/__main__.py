@@ -41,22 +41,21 @@ from pathlib import Path
 
 from barabot.core import db, durable
 from barabot.core.config import Config
-from barabot.core.telegram import TelegramConfigError
 from barabot.core.locks import _acquire_lock, _release_lock, _remove_pid, _write_pid
 from barabot.core.service import Service
 from barabot.core.setup_hints import (
     PROCESSOR_COMMAND,
     PROJECT_ROOT,
-    READY_COMMAND,
     SCRAPER_COMMAND,
     SETUP_COMMAND,
     missing_setup_commands,
     next_setup_command,
     setup_guidance_commands,
 )
+from barabot.core.telegram import TelegramConfigError
 from barabot.domains.bot.service import BotService
-from barabot.domains.processor.listing import ListingProcessor
 from barabot.domains.processor.budget import Budget
+from barabot.domains.processor.listing import ListingProcessor
 from barabot.domains.processor.matching import JEV_IMAGES, JevDecider
 from barabot.domains.processor.stats import StatsReporter
 from barabot.domains.scraper import ScraperService
@@ -106,10 +105,7 @@ def _check_config() -> int:
         for command in dict.fromkeys([SETUP_COMMAND, *pending]):
             print(f"  {command}", file=sys.stderr)
         return 2
-    print(
-        f"barabot config ok: scraper={cfg.telegram.backend} "
-        f"chats={len(cfg.watch_chats)} log_level={cfg.log_level}"
-    )
+    print(f"barabot config ok: scraper={cfg.telegram.backend} chats={len(cfg.watch_chats)} log_level={cfg.log_level}")
     return 0
 
 
@@ -125,9 +121,7 @@ def _build_matching(cfg: Config, budget: Budget) -> tuple[JevDecider, PhotoDownl
     return decider, PhotoDownloader(JEV_IMAGES, cfg.media_dir)
 
 
-def _build_services(
-    cfg: Config, processor: ListingProcessor, photos: PhotoDownloader, budget: Budget
-) -> list[Service]:
+def _build_services(cfg: Config, processor: ListingProcessor, photos: PhotoDownloader, budget: Budget) -> list[Service]:
     """Construct all services. Add a new domain by adding one line here."""
     services: list[Service] = [
         ScraperService(cfg, MessageIngest(cfg.db_path, processor.schedule), photos),
@@ -151,7 +145,10 @@ def _announce_start(cfg: Config, budget: Budget) -> None:
     notice(
         log,
         "barabot up: watching %d chat(s), %d active subscription(s), Jev spend $%.3f of %s",
-        len(cfg.watch_chats), active, budget.spent_usd(), limit,
+        len(cfg.watch_chats),
+        active,
+        budget.spent_usd(),
+        limit,
     )
 
 
@@ -256,8 +253,10 @@ def _subscription_command(args: argparse.Namespace) -> int:
             state = "active" if row.active else "off"
             not_part = f" | not: {row.author_not}" if row.author_not else ""
             chats = ",".join(str(c) for c in row.chats)
-            print(f"{row.id:>4} {state:6} user={row.user_id} chats={chats}\n"
-                  f"     author: {row.author}{not_part}\n     query: {row.query}")
+            print(
+                f"{row.id:>4} {state:6} user={row.user_id} chats={chats}\n"
+                f"     author: {row.author}{not_part}\n     query: {row.query}"
+            )
         return 0
     if subscriptions.deactivate(path, args.id):
         print(f"subscription {args.id} deactivated")
@@ -274,9 +273,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     p_run.add_argument("--check", action="store_true")
 
     p_setup = sub.add_parser("setup", help="Configure all missing components.")
-    p_setup.add_argument(
-        "-f", "--force", "--forced", action="store_true", help="Reconfigure components."
-    )
+    p_setup.add_argument("-f", "--force", "--forced", action="store_true", help="Reconfigure components.")
     p_setup.add_argument(
         "--headless",
         action="store_true",
@@ -334,15 +331,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return asyncio.run(setup_scraper(root=PROJECT_ROOT))
             from barabot.core.setup import setup
 
-            return asyncio.run(
-                setup(root=PROJECT_ROOT, force=args.force, headless=args.headless)
-            )
+            return asyncio.run(setup(root=PROJECT_ROOT, force=args.force, headless=args.headless))
         except TelegramConfigError as exc:
             parser.error(str(exc))
         except (KeyboardInterrupt, EOFError):
-            command = (
-                SCRAPER_COMMAND if args.setup_component == "scraper" else SETUP_COMMAND
-            )
+            command = SCRAPER_COMMAND if args.setup_component == "scraper" else SETUP_COMMAND
             print(f"Cancelled; rerun with:\n{command}", file=sys.stderr)
             return 130
 

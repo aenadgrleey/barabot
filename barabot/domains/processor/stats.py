@@ -5,6 +5,7 @@ the app database and reports what happened since the previous digest:
 messages stored, listings decided, Jev requests (and how many carried
 photos), tokens, spend, matches.
 """
+
 from __future__ import annotations
 
 import asyncio

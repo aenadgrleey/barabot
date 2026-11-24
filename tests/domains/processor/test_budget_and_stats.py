@@ -71,7 +71,9 @@ def test_digest_counts_only_what_happened_since_the_previous_one(db, caplog):
     with caplog.at_level(NOTICE):
         first = reporter.report()
         second = reporter.report()
-    assert first.startswith("Digest: 2 new message(s), 1 listing(s) checked, 1 match(es); Jev 2 request(s), 1 with photos (3 photos), 6000 tokens")
+    assert first.startswith(
+        "Digest: 2 new message(s), 1 listing(s) checked, 1 match(es); Jev 2 request(s), 1 with photos (3 photos), 6000 tokens"
+    )
     assert second.startswith("Digest: 0 new message(s), 0 listing(s) checked, 0 match(es); Jev 0 request(s)")
     assert "spent $0.007 of $1.00" in second
     assert first.endswith("matches by subscription: #1×1")

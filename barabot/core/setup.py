@@ -1,4 +1,5 @@
 """Resumable interactive and incremental headless setup orchestration."""
+
 from __future__ import annotations
 
 import getpass
@@ -11,17 +12,16 @@ from typing import Any
 
 from dotenv import set_key
 
-from barabot.core.telegram import TelegramBackend
 from barabot.core.setup_hints import (
     BOT_COMMAND,
     PROCESSOR_COMMAND,
     READY_COMMAND,
-    SCRAPER_COMMAND,
     SETUP_COMMAND,
     has_deploy_environment,
     missing_setup_commands,
     next_setup_command,
 )
+from barabot.core.telegram import TelegramBackend
 
 InputFunction = Callable[[str], str]
 ScraperCredentials = Callable[..., Path]
@@ -34,14 +34,10 @@ HEADLESS_COMMAND = ".venv/bin/python -m barabot setup --headless"
 PROCESSOR_NAMES = ("TYPESAFE_API_KEY",)
 
 
-def _default_scraper_credentials(
-    *, path: Path, input_func: InputFunction, secret_input_func: InputFunction
-) -> Path:
+def _default_scraper_credentials(*, path: Path, input_func: InputFunction, secret_input_func: InputFunction) -> Path:
     from barabot.domains.scraper.login import configure_credentials
 
-    return configure_credentials(
-        path=path, input_func=input_func, secret_input_func=secret_input_func
-    )
+    return configure_credentials(path=path, input_func=input_func, secret_input_func=secret_input_func)
 
 
 async def _default_scraper_authorize(*, root: Path) -> None:
@@ -174,13 +170,9 @@ async def setup(
             except OSError:
                 return _headless_failure("environment", *updates)
 
-        scraper_values = (
-            transport.uses_local_session and _supplied(source, ("API_ID", "API_HASH"))
-        )
+        scraper_values = transport.uses_local_session and _supplied(source, ("API_ID", "API_HASH"))
         if scraper_values:
-            missing = tuple(
-                name for name in ("API_ID", "API_HASH") if not source.get(name, "").strip()
-            )
+            missing = tuple(name for name in ("API_ID", "API_HASH") if not source.get(name, "").strip())
             if missing:
                 return _headless_failure("scraper", *missing)
         if scraper_values and (force or not scraper_path.exists()):

@@ -1,4 +1,5 @@
 """MessageIngest without DBOS: what it stores and which revisions it schedules."""
+
 import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
@@ -72,9 +73,7 @@ def test_deleting_two_photos_of_one_album_bumps_once(path):
 
 
 def test_repeated_delete_is_a_no_op(path):
-    calls = ingest_all(
-        path, seen(CHANNEL, 10), DeletedMessages(CHANNEL, [10]), DeletedMessages(CHANNEL, [10])
-    )
+    calls = ingest_all(path, seen(CHANNEL, 10), DeletedMessages(CHANNEL, [10]), DeletedMessages(CHANNEL, [10]))
     assert len(calls) == 2
 
 

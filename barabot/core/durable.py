@@ -4,6 +4,7 @@ DBOS is process-global. `launch` must run before any service starts so
 the scraper can enqueue from its first event, and `shutdown` runs after
 every service has stopped.
 """
+
 from __future__ import annotations
 
 import logging

@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-
 VALID_HASH = "0123456789abcdef0123456789ABCDEF"
 
 
@@ -75,9 +74,7 @@ def test_credentials_from_mapping_validates_and_normalizes_without_writing_files
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     login = _module(monkeypatch, tmp_path)
-    credentials = login.credentials_from_mapping(
-        {"API_ID": " API_ID=12345 ", "API_HASH": f"API_HASH={VALID_HASH}"}
-    )
+    credentials = login.credentials_from_mapping({"API_ID": " API_ID=12345 ", "API_HASH": f"API_HASH={VALID_HASH}"})
     assert credentials == (12345, VALID_HASH)
     assert list(tmp_path.iterdir()) == []
 
@@ -104,9 +101,7 @@ def test_configure_credentials_from_mapping_atomically_writes_private_file_only(
     login = _module(monkeypatch, tmp_path)
     path = tmp_path / "config/scraper.env"
 
-    result = login.configure_credentials_from_mapping(
-        {"API_ID": "12345", "API_HASH": VALID_HASH}, path=path
-    )
+    result = login.configure_credentials_from_mapping({"API_ID": "12345", "API_HASH": VALID_HASH}, path=path)
 
     assert result == path
     assert path.read_text(encoding="utf-8") == f"API_ID=12345\nAPI_HASH={VALID_HASH}\n"
@@ -129,9 +124,7 @@ def test_credentials_atomic_replace_failure_preserves_existing_file_and_no_temp(
 
     monkeypatch.setattr(login.os, "replace", fail_replace)
     with pytest.raises(OSError):
-        login.configure_credentials_from_mapping(
-            {"API_ID": "12345", "API_HASH": VALID_HASH}, path=path
-        )
+        login.configure_credentials_from_mapping({"API_ID": "12345", "API_HASH": VALID_HASH}, path=path)
 
     assert path.read_bytes() == b"old-private-credentials"
     assert [p.name for p in path.parent.iterdir()] == ["scraper.env"]
@@ -144,9 +137,7 @@ def test_authorize_reuses_persisted_credentials_without_prompting(
     login = _module(monkeypatch, tmp_path)
     config = tmp_path / "config"
     config.mkdir()
-    (config / "scraper.env").write_text(
-        f"API_ID=42\nAPI_HASH={VALID_HASH}\n", encoding="utf-8"
-    )
+    (config / "scraper.env").write_text(f"API_ID=42\nAPI_HASH={VALID_HASH}\n", encoding="utf-8")
     events: list[object] = []
 
     def factory(session: str, api_id: int, api_hash: str) -> AuthorizedClient:
@@ -223,9 +214,7 @@ def test_authorize_rejects_unauthorized_client_and_still_disconnects(
     assert events == ["start", "authorized", "disconnect"]
 
 
-def test_authorize_makes_created_session_and_parent_private(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_authorize_makes_created_session_and_parent_private(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     login = _module(monkeypatch, tmp_path)
     config = tmp_path / "config"
     config.mkdir(mode=0o755)

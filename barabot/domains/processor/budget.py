@@ -9,6 +9,7 @@ Spend is input tokens times a configured price; TypeSafe does not bill
 output. The price comes from public reports, not from TypeSafe's docs, so
 compare with the console now and then.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -57,7 +58,9 @@ class Budget:
             if not self._exhausted_reported:
                 log.error(
                     "Jev budget exhausted: $%.4f of $%.2f spent. Matching is paused; "
-                    "raise JEV_BUDGET_USD and restart to resume.", spent, self._limit,
+                    "raise JEV_BUDGET_USD and restart to resume.",
+                    spent,
+                    self._limit,
                 )
                 self._exhausted_reported = True
             raise BudgetExhausted(f"${spent:.4f} of ${self._limit:.2f} spent")

@@ -13,9 +13,7 @@ def size(type_, w, h):
 
 
 def photo(*sizes, photo_id=777):
-    return types.Photo(
-        id=photo_id, access_hash=1, file_reference=b"", date=None, sizes=list(sizes), dc_id=2
-    )
+    return types.Photo(id=photo_id, access_hash=1, file_reference=b"", date=None, sizes=list(sizes), dc_id=2)
 
 
 def downloader(media_dir=Path("unused")):

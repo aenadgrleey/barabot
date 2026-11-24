@@ -16,6 +16,7 @@ two events on one listing can interleave: B bumps to 3 and cancels 2
 before A, which bumped to 2, has enqueued it; then A enqueues 2 and
 both 2 and 3 run. The section takes a few milliseconds.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -118,7 +119,6 @@ class MessageIngest:
                 return [(key, self._bump_listing(conn, key)) for key in keys]
         finally:
             conn.close()
-
 
     @staticmethod
     def _bump_listing(conn: sqlite3.Connection, key: ListingKey) -> int:

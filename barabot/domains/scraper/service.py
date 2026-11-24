@@ -4,6 +4,7 @@ Live NewMessage, MessageEdited and MessageDeleted events and the startup
 backfill all go through `MessageIngest`. Photos are downloaded before
 ingest, outside its lock, so processing can show them to Jev.
 """
+
 from __future__ import annotations
 
 import asyncio

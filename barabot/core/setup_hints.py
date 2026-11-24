@@ -1,4 +1,5 @@
 """Offline setup guidance based only on expected file existence."""
+
 from __future__ import annotations
 
 import sqlite3
@@ -25,8 +26,7 @@ def has_local_scraper_authorization(path: Path) -> bool:
         uri = f"file:{path.resolve()}?mode=ro&immutable=1"
         with sqlite3.connect(uri, uri=True) as connection:
             row = connection.execute(
-                "SELECT 1 FROM sessions "
-                "WHERE auth_key IS NOT NULL AND length(auth_key) > 0 LIMIT 1"
+                "SELECT 1 FROM sessions WHERE auth_key IS NOT NULL AND length(auth_key) > 0 LIMIT 1"
             ).fetchone()
     except (OSError, sqlite3.Error):
         return False
@@ -47,8 +47,7 @@ def missing_setup_commands(root: Path, transport: TelegramTransport | None = Non
     if not has_deploy_environment(config_dir / ".env"):
         commands.append(SETUP_COMMAND)
     if transport.uses_local_session and (
-        not (config_dir / "scraper.env").exists()
-        or not has_local_scraper_authorization(config_dir / "scraper.session")
+        not (config_dir / "scraper.env").exists() or not has_local_scraper_authorization(config_dir / "scraper.session")
     ):
         commands.append(SCRAPER_COMMAND)
     if not (config_dir / "processor.env").exists():

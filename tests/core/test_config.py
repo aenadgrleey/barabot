@@ -8,7 +8,6 @@ from pathlib import Path
 import dotenv
 import pytest
 
-
 _ENV_VARS = (
     "BARABOT_ENV",
     "API_ID",
@@ -82,9 +81,7 @@ def test_load_merges_domain_files_before_process_fallback(
 
 
 @pytest.mark.parametrize("raw", ["develop", "prod"])
-def test_load_parses_deploy_environment(
-    monkeypatch: pytest.MonkeyPatch, raw: str
-) -> None:
+def test_load_parses_deploy_environment(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
     config, _ = _import_config(monkeypatch)
     _set_valid_environment(monkeypatch, raw)
 
@@ -116,6 +113,7 @@ def test_invalid_barabot_env_fails_with_value_and_accepted_values(
 
 def test_telegram_backend_file_and_override(tmp_path, monkeypatch):
     from types import SimpleNamespace
+
     from barabot.core.telegram import TelegramBackend, TelegramConfigError
 
     monkeypatch.delenv("TELEGRAM_BACKEND")

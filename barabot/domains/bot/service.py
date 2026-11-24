@@ -1,9 +1,8 @@
 """Bot service. Empty stub."""
+
 from __future__ import annotations
 
 import asyncio
-
-from barabot.core.service import Service
 
 
 class BotService:

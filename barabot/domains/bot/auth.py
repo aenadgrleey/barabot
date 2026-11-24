@@ -1,4 +1,5 @@
 """Telegram Bot API token verification and private persistence."""
+
 from __future__ import annotations
 
 import json

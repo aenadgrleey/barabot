@@ -24,19 +24,14 @@ def _insert(conn, chat_id, msg_id, grouped_id=None):
 def test_schema_derives_listing_key(conn):
     _insert(conn, -100, 7)
     _insert(conn, -100, 8, grouped_id=555)
-    rows = conn.execute(
-        "SELECT msg_id, listing_album, listing_ref FROM messages ORDER BY msg_id"
-    ).fetchall()
+    rows = conn.execute("SELECT msg_id, listing_album, listing_ref FROM messages ORDER BY msg_id").fetchall()
     assert [tuple(r) for r in rows] == [(7, 0, 7), (8, 1, 555)]
 
 
 def test_album_flag_keeps_grouped_and_msg_ids_apart(conn):
     _insert(conn, -100, 555)
     _insert(conn, -100, 9, grouped_id=555)
-    keys = {
-        ListingKey.from_row(*r)
-        for r in conn.execute("SELECT chat_id, listing_album, listing_ref FROM messages")
-    }
+    keys = {ListingKey.from_row(*r) for r in conn.execute("SELECT chat_id, listing_album, listing_ref FROM messages")}
     assert keys == {ListingKey(-100, False, 555), ListingKey(-100, True, 555)}
 
 
@@ -50,8 +45,10 @@ def test_workflow_id_encodes_kind():
     [
         ("SELECT * FROM messages WHERE msg_id IN (1, 2) AND chat_id > -1000000000000", "messages_by_msg_id"),
         (
-            "SELECT text FROM messages WHERE chat_id = 1 AND listing_album = 1 AND listing_ref = 2 "
-            "AND deleted = 0 ORDER BY msg_id",
+            (
+                "SELECT text FROM messages WHERE chat_id = 1 AND listing_album = 1 AND listing_ref = 2 "
+                "AND deleted = 0 ORDER BY msg_id"
+            ),
             "messages_by_listing",
         ),
     ],

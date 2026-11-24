@@ -9,7 +9,6 @@ import pytest
 
 from barabot.core import setup
 
-
 VALID_API_HASH = "0123456789abcdef0123456789abcdef"
 
 
@@ -159,19 +158,23 @@ def test_setup_scraper_only_authorizes_session(tmp_path: Path) -> None:
         seen.append(root)
         _authorized_session(root)
 
-    assert asyncio.run(
-        setup.setup_scraper(
-            root=tmp_path,
-            scraper_authorize=authorize,
-            config_loader=_fail,
+    assert (
+        asyncio.run(
+            setup.setup_scraper(
+                root=tmp_path,
+                scraper_authorize=authorize,
+                config_loader=_fail,
+            )
         )
-    ) == 0
+        == 0
+    )
     assert seen == [tmp_path]
 
 
 def test_gateway_setup_and_check_need_no_local_telegram_files(tmp_path, monkeypatch):
-    from barabot import __main__ as cli
     import sys
+
+    from barabot import __main__ as cli
     from barabot.core import config
 
     monkeypatch.delenv("TELEGRAM_BACKEND")
@@ -183,11 +186,19 @@ def test_gateway_setup_and_check_need_no_local_telegram_files(tmp_path, monkeypa
     monkeypatch.delenv("API_ID", raising=False)
     monkeypatch.delenv("API_HASH", raising=False)
 
-    result = asyncio.run(setup.setup(
-        root=tmp_path, headless=True,
-        environ={"BARABOT_ENV": "prod", "TELEGRAM_BACKEND": "tgmux", "TYPESAFE_API_KEY": "test", "BOT_TOKEN": "token"},
-        bot_authorize=lambda token, path: path.write_text(token),
-    ))
+    result = asyncio.run(
+        setup.setup(
+            root=tmp_path,
+            headless=True,
+            environ={
+                "BARABOT_ENV": "prod",
+                "TELEGRAM_BACKEND": "tgmux",
+                "TYPESAFE_API_KEY": "test",
+                "BOT_TOKEN": "token",
+            },
+            bot_authorize=lambda token, path: path.write_text(token),
+        )
+    )
     assert result == 0
     assert asyncio.run(setup.setup_scraper(root=tmp_path, scraper_authorize=_fail_async)) == 0
     assert cli.main(["run", "--check"]) == 0
@@ -196,16 +207,36 @@ def test_gateway_setup_and_check_need_no_local_telegram_files(tmp_path, monkeypa
 
 def test_headless_backend_setting_survives_incremental_setup(tmp_path):
     path = tmp_path / "config/.env"
-    assert asyncio.run(setup.setup(root=tmp_path, headless=True, environ={
-        "TELEGRAM_BACKEND": "telethon",
-    })) == 0
+    assert (
+        asyncio.run(
+            setup.setup(
+                root=tmp_path,
+                headless=True,
+                environ={
+                    "TELEGRAM_BACKEND": "telethon",
+                },
+            )
+        )
+        == 0
+    )
     assert "TELEGRAM_BACKEND=telethon" in path.read_text()
     assert setup.SETUP_COMMAND in setup.missing_setup_commands(tmp_path)
     with path.open("a") as stream:
         stream.write("WATCH_CHATS=123\n")
-    assert asyncio.run(setup.setup(root=tmp_path, headless=True, environ={
-        "BARABOT_ENV": "prod",
-    })) == 0
+    assert (
+        asyncio.run(
+            setup.setup(
+                root=tmp_path,
+                headless=True,
+                environ={
+                    "BARABOT_ENV": "prod",
+                },
+            )
+        )
+        == 0
+    )
     assert set(path.read_text().splitlines()) == {
-        "TELEGRAM_BACKEND=telethon", "BARABOT_ENV=prod", "WATCH_CHATS=123",
+        "TELEGRAM_BACKEND=telethon",
+        "BARABOT_ENV=prod",
+        "WATCH_CHATS=123",
     }

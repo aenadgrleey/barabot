@@ -6,6 +6,7 @@ priority comes from a "<N>" prefix on stdout, so in that case every line
 gets one. NOTICE is the level for "normal but significant" events a human
 should see: startup, a match, the hourly digest, budget milestones.
 """
+
 from __future__ import annotations
 
 import logging

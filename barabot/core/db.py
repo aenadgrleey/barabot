@@ -16,6 +16,7 @@ an album groups by `grouped_id`, a single message stands alone by
 Every caller opens a short-lived connection, usually inside
 `asyncio.to_thread`, so no connection crosses threads.
 """
+
 from __future__ import annotations
 
 import sqlite3

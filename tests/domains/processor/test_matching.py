@@ -1,4 +1,5 @@
 """Question building and answer reading, against real SDK response models."""
+
 import asyncio
 from pathlib import Path
 
@@ -58,7 +59,6 @@ def test_too_many_questions_are_refused_before_the_request():
     ("author_p", "choice", "matched", "needs_photos"),
     [
         (0.9, "fits", True, False),
-        (0.9, "unclear", False, True),
         (0.9, "unclear", False, True),
         (0.9, "does_not_fit", False, False),
         (0.3, "fits", False, False),  # topic fits, wrong role

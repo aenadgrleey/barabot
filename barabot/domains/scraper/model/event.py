@@ -3,6 +3,7 @@
 Live events and backfill pages both convert into these, so the ingest
 path does not depend on Telethon types.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

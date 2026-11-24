@@ -4,6 +4,7 @@ Lifted out of bot.py so unit tests can verify them without importing
 Telethon (which on import touches asyncio.get_event_loop and crashes
 if there's no running loop).
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -23,9 +24,7 @@ def _acquire_lock(path: Path) -> int:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as exc:
         os.close(fd)
-        raise RuntimeError(
-            f"another barabot instance is already running (lock at {path})"
-        ) from exc
+        raise RuntimeError(f"another barabot instance is already running (lock at {path})") from exc
     return fd
 
 

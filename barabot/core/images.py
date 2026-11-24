@@ -8,6 +8,7 @@ The goal is the cheapest image that is good enough, not the largest one
 allowed: image tokens grow with pixels. `target_long_side` and
 `max_images` are the knobs to experiment with.
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -24,11 +25,7 @@ class ImageSpec:
     max_images: int  # photos sent per request
 
     def accepts(self, w: int, h: int) -> bool:
-        return (
-            self.min_side <= min(w, h)
-            and max(w, h) <= self.max_side
-            and self.min_pixels <= w * h <= self.max_pixels
-        )
+        return self.min_side <= min(w, h) and max(w, h) <= self.max_side and self.min_pixels <= w * h <= self.max_pixels
 
     def pick(self, sizes: Sequence[tuple[int, int]]) -> int | None:
         """Index of the size to use: the smallest accepted one that reaches the

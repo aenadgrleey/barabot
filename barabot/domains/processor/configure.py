@@ -4,6 +4,7 @@ Processing decides matches with TypeSafe Jev, so its only setting is the
 API key. config/processor.env may still hold embedding settings from the
 embedding-based design; they are ignored.
 """
+
 from __future__ import annotations
 
 import getpass

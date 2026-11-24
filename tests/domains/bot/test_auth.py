@@ -9,7 +9,6 @@ import pytest
 
 from barabot.domains.bot import auth
 
-
 TOKEN = "123456:super-secret-token"
 
 
@@ -93,9 +92,7 @@ class TestVerifyToken:
 
         def opener(request: object, timeout: float):
             requested.append((request, timeout))
-            return FakeResponse(
-                {"ok": True, "result": {"id": 42, "username": "safe_bot"}}
-            )
+            return FakeResponse({"ok": True, "result": {"id": 42, "username": "safe_bot"}})
 
         identity = auth.verify_token(TOKEN, opener=opener)
 

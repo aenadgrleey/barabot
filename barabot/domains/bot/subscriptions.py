@@ -4,6 +4,7 @@ Command mode, agent mode and the Mini App will call these functions. Until
 the bot exists, `python -m barabot subscription ...` does. Blocking; call
 through `asyncio.to_thread` from async code.
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence

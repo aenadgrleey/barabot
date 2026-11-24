@@ -2,7 +2,9 @@ import pytest
 
 from barabot.core.images import ImageSpec
 
-SPEC = ImageSpec(min_side=280, max_side=1568, min_pixels=78_400, max_pixels=2_458_624, target_long_side=800, max_images=4)
+SPEC = ImageSpec(
+    min_side=280, max_side=1568, min_pixels=78_400, max_pixels=2_458_624, target_long_side=800, max_images=4
+)
 
 TELEGRAM = [(90, 67), (320, 240), (800, 600), (1280, 960)]  # s, m, x, y
 

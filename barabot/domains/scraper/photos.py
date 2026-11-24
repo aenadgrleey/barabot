@@ -9,6 +9,7 @@ them. The scraper does not know that model: the composition root
 (`barabot.__main__`) builds the PhotoDownloader with the decider's
 ImageSpec, next to the decider itself.
 """
+
 from __future__ import annotations
 
 import logging
@@ -28,7 +29,9 @@ class PhotoDownloader:
         self._spec = spec
         self._media_dir = media_dir
 
-    def pick_size(self, photo: types.Photo) -> types.PhotoSize | types.PhotoCachedSize | types.PhotoSizeProgressive | None:
+    def pick_size(
+        self, photo: types.Photo
+    ) -> types.PhotoSize | types.PhotoCachedSize | types.PhotoSizeProgressive | None:
         """The Telegram photo size to download, or None to skip the photo."""
         # Stripped, path and empty sizes carry no dimensions and are never candidates.
         sized = [

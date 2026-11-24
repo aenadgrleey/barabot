@@ -33,9 +33,7 @@ def test_missing_setup_commands_are_ordered_and_scraper_is_deduplicated(
     (config / ".env").write_text("BARABOT_ENV=develop\n")
     (config / "processor.env").touch()
     (config / "bot.token").touch()
-    assert setup_hints.missing_setup_commands(tmp_path) == [
-        setup_hints.SCRAPER_COMMAND
-    ]
+    assert setup_hints.missing_setup_commands(tmp_path) == [setup_hints.SCRAPER_COMMAND]
 
 
 def test_next_setup_command_reaches_ready_only_for_complete_setup(

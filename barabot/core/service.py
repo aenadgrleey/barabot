@@ -19,6 +19,7 @@ Why a Protocol and not just "implement these methods":
   know which domain is which.
 - Easy to swap a stub for a real impl without touching the composer.
 """
+
 from __future__ import annotations
 
 import asyncio

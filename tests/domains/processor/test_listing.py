@@ -4,6 +4,7 @@ The debounce is shortened to keep the suite fast; queue polling is 0.2 s.
 FakeDecider answers by rules and records every call, so the tests see
 which subscriptions went to which round.
 """
+
 import asyncio
 import json
 from datetime import UTC, datetime
@@ -41,10 +42,7 @@ class FakeDecider:
         if photos and self.reject_photos:
             raise TypeSafeBadRequestError(400, {"detail": "image rejected"}, httpx2.Headers())
         answers = self.photo_answers if photos else self.text_answers
-        return [
-            Decision(s.id, 0.95, answers.get(s.query, "does_not_fit"), 0.9, 2 if photos else 1)
-            for s in subs
-        ]
+        return [Decision(s.id, 0.95, answers.get(s.query, "does_not_fit"), 0.9, 2 if photos else 1) for s in subs]
 
 
 def run(tmp_path: Path, scenario, decider=None, subs=()):

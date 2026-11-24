@@ -1,4 +1,5 @@
 """Telegram transport configuration shared by setup and runtime."""
+
 from __future__ import annotations
 
 import logging

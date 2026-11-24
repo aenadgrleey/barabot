@@ -36,6 +36,7 @@ it recovers runs after a restart. Two rules follow:
 - One instance per `config_name` per process. Renaming the class name
   below or the config name orphans pending runs.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -64,15 +65,15 @@ LISTINGS_QUEUE = "listings"
 
 # Jev calls: cancellation interrupts the HTTP request (preemptible), and
 # transient API errors are retried durably, on top of the SDK's own retries.
-_JEV_STEP: dict[str, Any] = dict(
-    preemptible=True,
-    timeout_seconds=120.0,
-    retries_allowed=True,
-    max_attempts=4,
-    interval_seconds=5.0,
-    backoff_rate=3.0,
-    should_retry=is_transient,
-)
+_JEV_STEP: dict[str, Any] = {
+    "preemptible": True,
+    "timeout_seconds": 120.0,
+    "retries_allowed": True,
+    "max_attempts": 4,
+    "interval_seconds": 5.0,
+    "backoff_rate": 3.0,
+    "should_retry": is_transient,
+}
 
 
 @dataclass(frozen=True)
@@ -126,9 +127,7 @@ class ListingProcessor(DBOSConfiguredInstance):
 
     async def open(self) -> None:
         """Register the queue. Call after DBOS.launch()."""
-        self._queue = await DBOS.register_queue_async(
-            LISTINGS_QUEUE, worker_concurrency=8, polling_interval_sec=0.2
-        )
+        self._queue = await DBOS.register_queue_async(LISTINGS_QUEUE, worker_concurrency=8, polling_interval_sec=0.2)
 
     async def schedule(self, key: ListingKey, rev: int) -> None:
         """Replace the pending or running run of `key` with revision `rev`."""
@@ -254,9 +253,7 @@ class ListingProcessor(DBOSConfiguredInstance):
             return Assembled("undecided", snapshot, version)
         return Assembled("unchanged")
 
-    def _save_version_blocking(
-        self, key: ListingKey, rev: int, snapshot: Snapshot, seen_version: int
-    ) -> int | None:
+    def _save_version_blocking(self, key: ListingKey, rev: int, snapshot: Snapshot, seen_version: int) -> int | None:
         """Compare-and-set on version; also refuse if a newer revision arrived."""
         conn = connect(self._db_path)
         try:
@@ -313,8 +310,17 @@ class ListingProcessor(DBOSConfiguredInstance):
                     "round = excluded.round, matched = excluded.matched, p_fits = excluded.p_fits, "
                     "decided_at = datetime('now')",
                     [
-                        (*key, version, d.subscription_id, d.author_p, d.choice, d.confidence, d.round,
-                         int(d.matched), d.p_fits)
+                        (
+                            *key,
+                            version,
+                            d.subscription_id,
+                            d.author_p,
+                            d.choice,
+                            d.confidence,
+                            d.round,
+                            int(d.matched),
+                            d.p_fits,
+                        )
                         for d in decisions
                     ],
                 )
@@ -347,7 +353,11 @@ class ListingProcessor(DBOSConfiguredInstance):
         rounds = {d.round for d in decisions}
         log.info(
             "Decided %s v%d: %d subscription(s), photo round %s, %d match(es)",
-            link, version, len(decisions), "yes" if 2 in rounds else "no", len(matched),
+            link,
+            version,
+            len(decisions),
+            "yes" if 2 in rounds else "no",
+            len(matched),
         )
         if not matched:
             return
@@ -361,8 +371,13 @@ class ListingProcessor(DBOSConfiguredInstance):
         for d in matched:
             log.info(
                 "Match: subscription #%d «%s» (author %.2f, fits %.2f, round %d) ← %s %s",
-                d.subscription_id, queries.get(d.subscription_id, "?"), d.author_p, d.p_fits, d.round,
-                link, snippet or "[без текста]",
+                d.subscription_id,
+                queries.get(d.subscription_id, "?"),
+                d.author_p,
+                d.p_fits,
+                d.round,
+                link,
+                snippet or "[без текста]",
             )
 
 

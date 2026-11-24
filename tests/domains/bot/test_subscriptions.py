@@ -41,11 +41,27 @@ def test_cli_round_trip(tmp_path, monkeypatch, capsys):
     # Patch by path: other tests re-import barabot.core.config, and the CLI
     # imports DATA_DIR from whatever module object is current.
     monkeypatch.setattr("barabot.core.config.DATA_DIR", tmp_path)
-    assert main([
-        "subscription", "add", "--user", "5", "--chat", "-100", "--chat", "-200",
-        "--author", "ищет жильё, чтобы снять", "--author-not", "сдаёт или продаёт жильё",
-        "--query", "квартира 2+kk в Праге",
-    ]) == 0
+    assert (
+        main(
+            [
+                "subscription",
+                "add",
+                "--user",
+                "5",
+                "--chat",
+                "-100",
+                "--chat",
+                "-200",
+                "--author",
+                "ищет жильё, чтобы снять",
+                "--author-not",
+                "сдаёт или продаёт жильё",
+                "--query",
+                "квартира 2+kk в Праге",
+            ]
+        )
+        == 0
+    )
     assert main(["subscription", "list"]) == 0
     out = capsys.readouterr().out
     assert "subscription 1 created" in out
@@ -62,7 +78,9 @@ def test_redecide_marks_listings_undecided(tmp_path, monkeypatch, capsys):
     path = tmp_path / "barabot.sqlite"
     migrate(path)
     conn = connect(path)
-    conn.execute("INSERT INTO listings (chat_id, album, ref, rev, version, decided_version) VALUES (-1, 0, 1, 1, 1, 1), (-1, 0, 2, 1, 0, 0)")
+    conn.execute(
+        "INSERT INTO listings (chat_id, album, ref, rev, version, decided_version) VALUES (-1, 0, 1, 1, 1, 1), (-1, 0, 2, 1, 0, 0)"
+    )
     conn.close()
     assert main(["processor", "redecide"]) == 0
     assert "1 listing(s) marked undecided" in capsys.readouterr().out
