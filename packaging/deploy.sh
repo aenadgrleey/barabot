@@ -4,14 +4,16 @@
 # Same scheme as tgmux/deploy/deploy.sh: dev is where work lands, a push to prod deploys.
 #
 #   barabot-deploy                 deploy the latest origin/prod
-#   barabot-deploy REF             deploy a tag or commit: checkout, install, validate, restart;
+#   barabot-deploy REF             deploy a tag or commit: checkout, uv sync, validate, restart;
 #                                  roll back on failure; nothing happens if REF is already deployed
 #   barabot-deploy --dry-run [REF] print what would happen
 #   barabot-deploy --check [REF]   validate the currently deployed commit without restarting
 #   barabot-deploy --auto          what barabot-deploy.timer runs every minute: deploy origin/prod if it
 #                                  moved; silent otherwise; skips a commit that already failed
 #
-# Validation is `python -m barabot run --check`: offline, config and setup only.
+# Dependencies come from uv.lock: `uv sync --locked` into /opt/barabot/.venv with the
+# tgmux extra and without dev tools. Validation is `python -m barabot run --check`:
+# offline, config and setup only.
 # config/ and data/ are not in git, so checkouts never touch them. Results are
 # logged to journald as barabot-deploy (notice on success, error on failure); whatever reads
 # the journal decides where they go.
@@ -41,23 +43,29 @@ ref=${1:-origin/prod}
 
 root=/opt/barabot
 python="$root/.venv/bin/python"
+uv=$(command -v uv || printf /usr/local/bin/uv)
 unit=barabot.service
 units=(barabot.service barabot-deploy.service barabot-deploy.timer)
 settle=10              # seconds the service must stay up after a restart
 state_dir=/root/.local/state/barabot
 failed_file=$state_dir/deploy-failed   # commit the timer must not retry
 
+# barabot.service hides /root, so the venv must run on the system python3, never on a
+# python uv downloads into /root/.local/share/uv. The timer's unit has no HOME, so the
+# cache location is explicit. Bytecode is compiled here: the service cannot write .venv.
+export UV_NO_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never UV_CACHE_DIR=${UV_CACHE_DIR:-/root/.cache/uv}
+sync=("$uv" sync --directory "$root" --locked --extra tgmux --no-dev --compile-bytecode --quiet)
+
 if [[ $mode == dry-run ]]; then
     printf 'DRY RUN: git -C %q fetch, checkout --detach %q\n' "$root" "$ref"
-    printf 'DRY RUN: %q -m pip install -r requirements-tgmux.txt, install changed systemd units, then barabot run --check\n' \
-        "$python"
+    printf 'DRY RUN: %s, install changed systemd units, then barabot run --check\n' "${sync[*]}"
     printf 'DRY RUN: systemctl restart %q, require it active after %ss; on failure restore the previous commit\n' \
         "$unit" "$settle"
     exit 0
 fi
 
 [[ -d $root/.git ]] || { printf 'error: %s is not a git work tree\n' "$root" >&2; exit 1; }
-[[ -x $python ]] || { printf 'error: missing %s (python3 -m venv %s/.venv)\n' "$python" "$root" >&2; exit 1; }
+[[ -x $python ]] || { printf 'error: missing %s (%s)\n' "$python" "${sync[*]}" >&2; exit 1; }
 [[ -f $root/config/.env ]] || { printf 'error: missing %s/config/.env\n' "$root" >&2; exit 1; }
 mkdir -p -m 700 "$state_dir"
 
@@ -124,7 +132,13 @@ install_units() {
 }
 
 install() {
-    "$python" -m pip install --quiet --disable-pip-version-check -r "$root/requirements-tgmux.txt" && install_units
+    if [[ -f $root/uv.lock ]]; then
+        "${sync[@]}"
+    else
+        # A commit from before the move to uv, reached by rolling back across it.
+        # Drop this branch once prod's previous commit has uv.lock as well.
+        "$uv" pip install --quiet --python "$python" --compile-bytecode -r "$root/requirements-tgmux.txt"
+    fi && install_units
 }
 
 if [[ $mode == check ]]; then
@@ -137,6 +151,7 @@ if [[ $mode == check ]]; then
 fi
 
 (( EUID == 0 )) || { printf 'error: activation must run as root\n' >&2; exit 1; }
+[[ -x $uv ]] || { printf 'error: uv is not installed (see the first install in README.md)\n' >&2; exit 1; }
 
 if [[ $target == "$old_ref" ]] && systemctl is-active --quiet "$unit"; then
     printf '%s is already at %s (%s) and running; nothing to do\n' "$unit" "${target:0:7}" "$ref"

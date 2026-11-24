@@ -35,6 +35,7 @@ data/
 *.sqlite
 *.sqlite-journal
 *.lock
+!uv.lock
 logs/
 *.log
 

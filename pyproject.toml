@@ -1,0 +1,35 @@
+[project]
+name = "barabot"
+version = "0.1.0"
+description = "Finds relevant listings in selected Telegram chats."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "telethon>=1.36.0",
+    "python-dotenv>=1.0.1",
+    # Processing behaviour is verified on DBOS 3.6; move the pin on purpose.
+    "dbos~=3.6.0",
+    "typesafe-sdk~=0.7.5",
+]
+
+[project.optional-dependencies]
+# Shared Telegram gateway. The server needs it; locally barabot falls back
+# to its own Telethon session without it.
+tgmux = ["tgmux"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9",
+    "pytest-asyncio>=1",
+]
+
+[tool.uv]
+# An application run as `python -m barabot` from the checkout, not a package to build.
+package = false
+
+[tool.uv.sources]
+tgmux = { git = "https://github.com/aenadgrleey/tgmux.git", rev = "eae116dae16ee6289f8785f85f59cff465ed4296" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_default_fixture_loop_scope = "function"
