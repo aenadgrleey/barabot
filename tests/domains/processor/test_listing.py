@@ -17,6 +17,7 @@ from typesafe_sdk import TypeSafeBadRequestError
 from barabot.core import durable
 from barabot.core.db import ListingKey, connect, migrate
 from barabot.domains.bot import subscriptions
+from barabot.domains.bot.notifier import Notifier
 from barabot.domains.processor.listing import ListingProcessor
 from barabot.domains.processor.matching import Decision
 from barabot.domains.scraper.ingest import MessageIngest
@@ -26,6 +27,16 @@ CHAT = -1001234567890
 OTHER_CHAT = -1009999999999
 ALBUM = 13_000_000_000_000_001
 KEY = ListingKey(CHAT, True, ALBUM)
+
+
+class SilentBot:
+    """Accepts notifications; what they say is tested in tests/domains/bot/test_notifier.py."""
+
+    async def send(self, user_id, text):
+        return 1
+
+    async def edit(self, user_id, message_id, text):
+        pass
 
 
 class FakeDecider:
@@ -56,12 +67,14 @@ def run(tmp_path: Path, scenario, decider=None, subs=()):
     decider = decider or FakeDecider()
 
     # One instance per config_name per process, so every test gets its own.
-    processor = ListingProcessor(db, media, decider, debounce_seconds=0.3, name=tmp_path.name)
+    notifier = Notifier(db, SilentBot(), name=tmp_path.name)
+    processor = ListingProcessor(db, media, decider, notifier, debounce_seconds=0.3, name=tmp_path.name)
 
     async def main():
         durable.launch(tmp_path / "dbos.sqlite")
         try:
             await processor.open()
+            await notifier.open()
             return await scenario(db, processor, MessageIngest(db, processor.schedule))
         finally:
             durable.shutdown()

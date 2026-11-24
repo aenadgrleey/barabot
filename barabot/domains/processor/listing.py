@@ -9,12 +9,15 @@ Steps of one run, each a DBOS step:
 5. decide_photos   only if some subscription answered "unclear" and the
    listing has photos: the same questions for those subscriptions, with photos
 6. save_decisions   write `matches` for this version, mark it decided
+7. notify   enqueue `Notifier.notify` for this version, a child of this run;
+   the notifier decides who hears what
 
 The snapshot from step 1 is the only place content is read; later steps
 get it from the workflow.
 
-Notification routing (new / updated / unmatched / removed) reads `matches`
-and arrives with the bot slice.
+Notifying is safe to repeat, so an unchanged listing is notified again
+too. That recovers a notify cancelled together with an earlier run that
+had already decided.
 
 A run is identified by `listing:{key}:{rev}`. Every scraper event cancels
 the previous revision and schedules the next one with a delay, which
@@ -49,7 +52,9 @@ from typing import Any
 
 from dbos import DBOS, DBOSConfiguredInstance, Queue, SetEnqueueOptions, SetWorkflowID
 
+from barabot.core.chats import message_link
 from barabot.core.db import ListingKey, connect, transaction
+from barabot.domains.bot.notifier import Notifier
 from barabot.domains.processor.budget import BudgetExhausted
 from barabot.domains.processor.matching import (
     REJECTED_IMAGES,
@@ -99,7 +104,7 @@ class Assembled:
               changed     content differs from the saved version
               undecided   content is saved as `seen_version`, its decisions are not
     seen_version: the version read; the compare-and-set base for `changed`,
-              the version to decide for `undecided`
+              the version to decide for `undecided`, the decided one for `unchanged`
     """
 
     outcome: str
@@ -114,6 +119,7 @@ class ListingProcessor(DBOSConfiguredInstance):
         db_path: Path,
         media_dir: Path,
         decider: Decider,
+        notifier: Notifier,
         *,
         debounce_seconds: float = 3.0,
         name: str = "default",
@@ -122,6 +128,7 @@ class ListingProcessor(DBOSConfiguredInstance):
         self._db_path = db_path
         self._media_dir = media_dir
         self._decider = decider
+        self._notifier = notifier
         self._debounce_seconds = debounce_seconds
         self._queue: Queue | None = None
 
@@ -144,8 +151,11 @@ class ListingProcessor(DBOSConfiguredInstance):
     async def process(self, chat_id: int, album: bool, ref: int, rev: int) -> str:
         key = ListingKey(chat_id, album, ref)
         assembled = await self.assemble(key, rev)
-        if assembled.outcome in ("stale", "unchanged"):
-            return assembled.outcome
+        if assembled.outcome == "stale":
+            return "stale"
+        if assembled.outcome == "unchanged":
+            await self._notifier.enqueue(key, rev, assembled.seen_version)
+            return "unchanged"
         snapshot = assembled.snapshot
         assert snapshot is not None, "changed and undecided listings carry a snapshot"
         if assembled.outcome == "changed":
@@ -156,10 +166,12 @@ class ListingProcessor(DBOSConfiguredInstance):
             version = assembled.seen_version
 
         decisions: list[Decision] = []
+        revisions: dict[int, int] = {}
         if not snapshot.removed:
             subscriptions = await self.load_subscriptions(key, rev, version)
             if subscriptions is None:
                 return "stale"
+            revisions = {s.id: s.revision for s in subscriptions}
             if subscriptions:
                 first = await self.decide_text(snapshot.text, subscriptions)
                 if first is None:
@@ -173,8 +185,10 @@ class ListingProcessor(DBOSConfiguredInstance):
                     if second is not None:
                         by_id = {d.subscription_id: d for d in second}
                         decisions = [by_id.get(d.subscription_id, d) for d in decisions]
-        matched = await self.save_decisions(key, version, decisions)
-        return f"version {version}: {matched} match(es)"
+        await self.save_decisions(key, version, decisions, revisions)
+        # In the workflow body, not a step: that makes the notify a child of this run.
+        await self._notifier.enqueue(key, rev, version)
+        return f"version {version}: {sum(d.matched for d in decisions)} match(es)"
 
     @DBOS.step()
     async def assemble(self, key: ListingKey, rev: int) -> Assembled:
@@ -215,8 +229,11 @@ class ListingProcessor(DBOSConfiguredInstance):
             return None
 
     @DBOS.step()
-    async def save_decisions(self, key: ListingKey, version: int, decisions: list[Decision]) -> int:
-        return await asyncio.to_thread(self._save_decisions_blocking, key, version, decisions)
+    async def save_decisions(
+        self, key: ListingKey, version: int, decisions: list[Decision], revisions: dict[int, int] | None = None
+    ) -> None:
+        """`revisions`: subscription ID to the revision of the text that was decided."""
+        await asyncio.to_thread(self._save_decisions_blocking, key, version, decisions, revisions or {})
 
     # Blocking halves of the steps; they run in a worker thread.
 
@@ -251,7 +268,7 @@ class ListingProcessor(DBOSConfiguredInstance):
             return Assembled("changed", snapshot, version)
         if listing["decided_version"] != version:
             return Assembled("undecided", snapshot, version)
-        return Assembled("unchanged")
+        return Assembled("unchanged", seen_version=version)
 
     def _save_version_blocking(self, key: ListingKey, rev: int, snapshot: Snapshot, seen_version: int) -> int | None:
         """Compare-and-set on version; also refuse if a newer revision arrived."""
@@ -287,11 +304,11 @@ class ListingProcessor(DBOSConfiguredInstance):
             if listing is None or listing["rev"] != rev or listing["version"] != version:
                 return None
             return [
-                Subscription(row["id"], row["author"], row["author_not"], row["query"])
+                Subscription(row["id"], row["author"], row["author_not"], row["query"], row["revision"])
                 for row in conn.execute(
                     # DISTINCT: two chats of one subscription, such as @name and
                     # its marked ID, can resolve to the same chat.
-                    "SELECT DISTINCT s.id, s.author, s.author_not, s.query FROM subscriptions s "
+                    "SELECT DISTINCT s.id, s.author, s.author_not, s.query, s.revision FROM subscriptions s "
                     "JOIN subscription_chats sc ON sc.subscription_id = s.id "
                     "JOIN chats c ON c.id = sc.chat "
                     "WHERE c.chat_id = ? AND s.active = 1 ORDER BY s.id",
@@ -301,17 +318,20 @@ class ListingProcessor(DBOSConfiguredInstance):
         finally:
             conn.close()
 
-    def _save_decisions_blocking(self, key: ListingKey, version: int, decisions: list[Decision]) -> int:
+    def _save_decisions_blocking(
+        self, key: ListingKey, version: int, decisions: list[Decision], revisions: dict[int, int]
+    ) -> None:
         conn = connect(self._db_path)
         try:
             with transaction(conn):
                 conn.executemany(
                     "INSERT INTO matches (chat_id, album, ref, version, subscription_id, author_p, choice, "
-                    "confidence, round, matched, p_fits) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    "confidence, round, matched, p_fits, subscription_revision) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                     "ON CONFLICT (chat_id, album, ref, version, subscription_id) DO UPDATE SET "
                     "author_p = excluded.author_p, choice = excluded.choice, confidence = excluded.confidence, "
                     "round = excluded.round, matched = excluded.matched, p_fits = excluded.p_fits, "
-                    "decided_at = datetime('now')",
+                    "subscription_revision = excluded.subscription_revision, decided_at = datetime('now')",
                     [
                         (
                             *key,
@@ -323,6 +343,7 @@ class ListingProcessor(DBOSConfiguredInstance):
                             d.round,
                             int(d.matched),
                             d.p_fits,
+                            revisions.get(d.subscription_id, 1),
                         )
                         for d in decisions
                     ],
@@ -336,7 +357,6 @@ class ListingProcessor(DBOSConfiguredInstance):
                 self._log_decisions(conn, key, version, decisions, matched)
         finally:
             conn.close()
-        return len(matched)
 
     def _log_decisions(
         self, conn, key: ListingKey, version: int, decisions: list[Decision], matched: list[Decision]
@@ -382,10 +402,3 @@ class ListingProcessor(DBOSConfiguredInstance):
                 link,
                 snippet or "[без текста]",
             )
-
-
-def message_link(chat_id: int, msg_id: int) -> str:
-    """t.me link to a message; works for members of the chat."""
-    if chat_id <= -1_000_000_000_000:  # channels and supergroups: -100<id>
-        return f"https://t.me/c/{-chat_id - 1_000_000_000_000}/{msg_id}"
-    return f"chat {chat_id} msg {msg_id}"

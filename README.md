@@ -4,7 +4,7 @@ Barabot is a Python service for finding relevant listings in selected Telegram c
 
 ## Architecture
 
-Barabot runs in one process: a scraper and a bot service on one asyncio loop, with background processing in [DBOS](https://docs.dbos.dev) workflows. The scraper owns the Telegram user connection and writes messages to `data/barabot.sqlite`. Each event schedules a debounced `process_listing` run that assembles the listing, saves a new version and checks it against the subscriptions of its chat with [TypeSafe Jev](https://docs.typesafe.ai). Jev first reads the text; if a subscription comes back unclear and the listing has photos, it asks again with them. Decisions go to the `matches` table. DBOS keeps workflow state in `data/dbos.sqlite`. The processor domain owns the TypeSafe API key. The bot domain owns the BotFather token. The scraper session and bot token belong to separate Telegram identities. The full design, including what is not built yet, is in [docs/architecture.html](docs/architecture.html).
+Barabot runs in one process: a scraper and a bot service on one asyncio loop, with background processing in [DBOS](https://docs.dbos.dev) workflows. The scraper owns the Telegram user connection and writes messages to `data/barabot.sqlite`. Each event schedules a debounced `process_listing` run that assembles the listing, saves a new version and checks it against the subscriptions of its chat with [TypeSafe Jev](https://docs.typesafe.ai). Jev first reads the text; if a subscription comes back unclear and the listing has photos, it asks again with them. Decisions go to the `matches` table. For every user who must hear about a version, a `notify` workflow sends the bot message once and edits it later as the listing changes, no longer matches or is deleted; `deliveries` records what each user sees. DBOS keeps workflow state in `data/dbos.sqlite`. The processor domain owns the TypeSafe API key. The bot domain owns the BotFather token. The scraper session and bot token belong to separate Telegram identities. The full design, including what is not built yet, is in [docs/architecture.html](docs/architecture.html).
 
 At startup, Barabot loads the configuration, takes an exclusive lock on `data/barabot.lock` and writes its PID to `data/barabot.pid`. It migrates the app database, launches DBOS, then starts the scraper and bot and runs them in one `asyncio.TaskGroup`. If one task fails, the group cancels the others. On `SIGINT` or `SIGTERM`, the services stop in reverse order and DBOS shuts down last. See the [entry point](barabot/__main__.py) and [service contract](barabot/core/service.py).
 
@@ -15,11 +15,11 @@ Dependencies are declared in [pyproject.toml](pyproject.toml) and pinned in `uv.
 | Connection | Install | Session owner |
 | --- | --- | --- |
 | Shared gateway | `uv sync --extra tgmux` | The [tgmux gateway](https://github.com/aenadgrleey/tgmux) holds the Telegram session. Barabot connects to its Unix socket as integration `barabot` on the default instance. |
-| Direct Telethon | `uv sync` | Barabot opens its own session in `config/scraper.session`. Get the application credentials from [my.telegram.org](https://my.telegram.org). |
+| Direct Telethon | `uv sync` | Barabot opens its own session in `config/scraper.session`. |
 
 `uv sync` also installs the dev tools. A later plain `uv sync` removes tgmux again, so repeat `--extra tgmux` when you use the gateway. Run the commands below with `source .venv/bin/activate` first, or prefix them with `uv run`.
 
-For the gateway, run `python -m barabot setup` under the same OS user as tgmux. For a direct connection, run `TELEGRAM_BACKEND=telethon python -m barabot setup` on first setup, then `python -m barabot setup scraper` to authorize the local session with your phone number, login code and 2FA if enabled. Setup also asks for a TypeSafe API key and a BotFather token.
+For the gateway, run `python -m barabot setup` under the same OS user as tgmux. For a direct connection, run `TELEGRAM_BACKEND=telethon python -m barabot setup` on first setup, then `python -m barabot setup scraper` to authorize the local session with your phone number, login code and 2FA if enabled. Setup also asks for the `API_ID` and `API_HASH` of a Telegram application from [my.telegram.org](https://my.telegram.org), which the bot needs with either connection, a TypeSafe API key and a BotFather token.
 
 ```bash
 python -m barabot run --check
@@ -35,10 +35,11 @@ Set `TELEGRAM_BACKEND` in `config/.env`. An exported environment variable takes 
 | Local file | Contents |
 | --- | --- |
 | `config/.env` | Deployment mode (`BARABOT_ENV=develop` or `prod`), Telegram backend, chat IDs, backfill depth and log level |
-| `config/scraper.env` | `API_ID` and `API_HASH` for direct Telethon |
+| `config/telegram.env` | `API_ID` and `API_HASH` of the Telegram application from [my.telegram.org](https://my.telegram.org). Required: the bot connects with them, and a local scraper session uses them too. An older `scraper.env` is renamed to it on start |
 | `config/scraper.session` | Authorized local Telethon session |
 | `config/processor.env` | `TYPESAFE_API_KEY` for subscription matching |
 | `config/bot.token` | Verified BotFather token |
+| `config/bot.session` | The bot's Telethon session, created on first start |
 
 To replace the TypeSafe key, run `python -m barabot processor configure`. For unattended setup, supply `BARABOT_ENV`, `TELEGRAM_BACKEND`, `TYPESAFE_API_KEY` and `BOT_TOKEN` in the environment and run `python -m barabot setup --headless`. For direct Telethon, also supply `API_ID` and `API_HASH`, then authorize the session interactively once. See the [environment template](.env.example).
 
@@ -75,7 +76,7 @@ cd /opt/barabot && UV_NO_MANAGED_PYTHON=1 uv sync --locked --extra tgmux --no-de
 ln -s /opt/barabot/packaging/deploy.sh /usr/local/bin/barabot-deploy
 ln -s /opt/barabot/packaging/deploy.sh /etc/aenaut-deploy/projects/barabot
 
-# config/ is not in git: .env (BARABOT_ENV=prod, TELEGRAM_BACKEND=tgmux), processor.env, bot.token
+# config/ is not in git: .env (BARABOT_ENV=prod, TELEGRAM_BACKEND=tgmux), telegram.env, processor.env, bot.token
 mkdir -p -m 700 /opt/barabot/config /opt/barabot/data
 tgmux integration add barabot        # if the gateway does not register on first connect
 cd /opt/barabot && .venv/bin/python -m barabot run --check

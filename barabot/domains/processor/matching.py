@@ -92,6 +92,7 @@ class Subscription:
     author: str
     author_not: str | None
     query: str
+    revision: int = 1  # of the text above; saved with each decision
 
 
 @dataclass(frozen=True)

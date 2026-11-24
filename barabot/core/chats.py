@@ -21,6 +21,7 @@ from enum import StrEnum
 _USERNAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{3,31}")
 _INVITE = re.compile(r"[A-Za-z0-9_-]+")
 _LINK = re.compile(r"(?:https?://)?(?:t|telegram)\.me/(.+)", re.IGNORECASE)
+_RESOLVE = re.compile(r"tg://resolve\?domain=([A-Za-z0-9_]+)(?:&.*)?", re.IGNORECASE)
 
 
 class ChatStatus(StrEnum):
@@ -58,15 +59,22 @@ ChatRef = Username | Invite | ChatId
 
 
 def parse_chat(raw: str | int) -> ChatRef:
-    """Accept @username, a t.me link to a chat, post or invite, or a marked chat ID."""
+    """Accept @username, a t.me or tg://resolve link to a chat, post, topic or invite, or a marked chat ID."""
     if isinstance(raw, int):
         return _chat_id(raw, raw)
     text = raw.strip()
     if re.fullmatch(r"-?\d+", text):
         return _chat_id(int(text), raw)
+    resolve = _RESOLVE.fullmatch(text)
+    if resolve:
+        text = resolve.group(1)
     link = _LINK.fullmatch(text)
     if link:
-        path = link.group(1).strip("/")
+        path = re.split(r"[?#]", link.group(1))[0].strip("/")
+        # t.me/c/<id>/<msg> is a message in a private channel or supergroup.
+        private = re.fullmatch(r"c/(\d+)(?:/.*)?", path)
+        if private:
+            return ChatId(-1_000_000_000_000 - int(private.group(1)))
         invite = None
         if path.startswith("+"):
             invite = path[1:]
@@ -111,3 +119,12 @@ def ref_from_row(kind: str, value: str) -> ChatRef:
         case "id":
             return ChatId(int(value))
     raise ValueError(f"unknown chat kind {kind!r}")
+
+
+def message_link(chat_id: int, msg_id: int, username: str | None = None) -> str:
+    """t.me link to a message. Without a username it works only for members of the chat."""
+    if username:
+        return f"https://t.me/{username}/{msg_id}"
+    if chat_id <= -1_000_000_000_000:  # channels and supergroups: -100<id>
+        return f"https://t.me/c/{-chat_id - 1_000_000_000_000}/{msg_id}"
+    return f"chat {chat_id} msg {msg_id}"

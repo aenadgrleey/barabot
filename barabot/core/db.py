@@ -4,8 +4,8 @@ DBOS keeps its own system database next to it. This one holds the
 domain tables: `messages` written by the scraper, `listings` whose `rev`
 the scraper bumps and whose content and `version` processing writes,
 `subscriptions` with their `chats` written by the bot, and `matches`, the
-decision processing makes for every listing version and subscription.
-`deliveries` arrives with the notification slice.
+decision processing makes for every listing version and subscription,
+and `deliveries`, what the bot has shown each user.
 
 A listing's identity is derived by the schema, not by Python. Each
 message row carries generated `listing_album` and `listing_ref` columns:
@@ -121,7 +121,25 @@ CREATE TABLE IF NOT EXISTS matches (
     matched         INTEGER NOT NULL,
     p_fits          REAL    NOT NULL DEFAULT 0,
     decided_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    -- subscriptions.revision whose text was checked
+    subscription_revision INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (chat_id, album, ref, version, subscription_id)
+);
+
+-- What the bot last showed a user about a listing: one message per
+-- listing and user, sent once and edited after that.
+--   state    matched | unmatched | removed
+--   version  the listing version the message shows
+CREATE TABLE IF NOT EXISTS deliveries (
+    chat_id        INTEGER NOT NULL,
+    album          INTEGER NOT NULL,
+    ref            INTEGER NOT NULL,
+    user_id        INTEGER NOT NULL,
+    version        INTEGER NOT NULL,
+    state          TEXT    NOT NULL CHECK (state IN ('matched', 'unmatched', 'removed')),
+    bot_message_id INTEGER NOT NULL,
+    updated_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (chat_id, album, ref, user_id)
 );
 
 -- One row per request to the decision model, for the spend limit and digests.
@@ -140,7 +158,7 @@ CREATE TABLE IF NOT EXISTS jev_usage (
 # does not touch existing tables, so migrate() adds them.
 _ADDED_COLUMNS = {
     "listings": {"decided_version": "INTEGER NOT NULL DEFAULT 0"},
-    "matches": {"p_fits": "REAL NOT NULL DEFAULT 0"},
+    "matches": {"p_fits": "REAL NOT NULL DEFAULT 0", "subscription_revision": "INTEGER NOT NULL DEFAULT 1"},
     "subscriptions": {"revision": "INTEGER NOT NULL DEFAULT 1"},
 }
 

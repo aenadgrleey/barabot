@@ -112,7 +112,7 @@ def test_processing_finds_subscriptions_once_the_chat_is_resolved(api, tmp_path)
     )
     conn.execute("INSERT INTO listings (chat_id, album, ref, rev, version) VALUES (-100777, 0, 1, 1, 1)")
     conn.close()
-    processor = ListingProcessor(tmp_path / "barabot.sqlite", tmp_path, decider=None, name=tmp_path.name)
+    processor = ListingProcessor(tmp_path / "barabot.sqlite", tmp_path, decider=None, notifier=None, name=tmp_path.name)
     found = processor._load_subscriptions_blocking(ListingKey(-100777, False, 1), 1, 1)
     assert found is not None
     assert [s.id for s in found] == [sub.id]
