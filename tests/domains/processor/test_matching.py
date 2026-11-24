@@ -59,14 +59,21 @@ def test_too_many_questions_are_refused_before_the_request():
     [
         (0.9, "fits", True, False),
         (0.9, "unclear", False, True),
+        (0.9, "unclear", False, True),
         (0.9, "does_not_fit", False, False),
         (0.3, "fits", False, False),  # topic fits, wrong role
         (0.3, "unclear", False, False),  # wrong role: photos would not help
     ],
 )
 def test_decision_rules(author_p, choice, matched, needs_photos):
-    d = Decision(1, author_p, choice, 0.9, 1)
+    d = Decision(1, author_p, choice, 0.9, 1, p_fits=0.9)
     assert (d.matched, d.needs_photos) == (matched, needs_photos)
+
+
+def test_an_unsure_fits_is_not_a_match():
+    """Real chat: «Румбокс» came back as fits for a console query with P(fits) 0.25."""
+    assert not Decision(1, 0.94, "fits", 0.25, 1, p_fits=0.33).matched
+    assert Decision(1, 0.94, "fits", 0.9, 1, p_fits=0.5).matched
 
 
 class FakeClient:
@@ -96,8 +103,8 @@ def test_text_round_sends_text_only_and_reads_answers():
     client = FakeClient()
     decisions = asyncio.run(JevDecider(client).decide("Сдаю 2+kk", [RENT, RENT_2]))
     assert decisions == [
-        Decision(1, 0.97, "fits", 0.8, 1),
-        Decision(2, 0.97, "unclear", 0.8, 1),
+        Decision(1, 0.97, "fits", 0.8, 1, p_fits=0.8),
+        Decision(2, 0.97, "unclear", 0.8, 1, p_fits=0.8),
     ]
     request = client.requests[0]
     assert request["state"] == {"text": "Сдаю 2+kk"}
@@ -109,7 +116,7 @@ def test_photo_round_sends_images_with_the_opt_in_header(tmp_path: Path):
     photo = tmp_path / "1-x.jpg"
     photo.write_bytes(b"jpeg")
     decisions = asyncio.run(JevDecider(client).decide("Сдаю", [RENT_2], [photo]))
-    assert decisions == [Decision(2, 0.97, "unclear", 0.8, 2)]
+    assert decisions == [Decision(2, 0.97, "unclear", 0.8, 2, p_fits=0.8)]
     request = client.requests[0]
     assert request["headers"] == IMAGES_HEADER
     assert [type(p) for p in request["state"]["photos"]] == [Image]

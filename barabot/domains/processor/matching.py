@@ -59,6 +59,9 @@ UNCLEAR = "unclear"
 UNCLEAR_DESCRIPTION = "not enough information to decide"
 
 AUTHOR_MIN = 0.6  # author noul probability needed for a match
+# Jev picks the most likely option even when it is unsure. On real chats the
+# false matches had P(fits) <= 0.42 while real ones were mostly >= 0.8.
+FITS_MIN = 0.5
 
 # Jev's hard image limits (docs.typesafe.ai/images), and what we choose to send.
 # 800 px is the size Telegram keeps as "x"; it measured ~1300 input tokens and
@@ -93,10 +96,11 @@ class Decision:
     choice: str  # FITS | DOES_NOT_FIT | UNCLEAR
     confidence: float
     round: int  # 1: text only, 2: text and photos
+    p_fits: float = 1.0  # probability of the FITS option; default for steps recorded before it existed
 
     @property
     def matched(self) -> bool:
-        return self.author_p >= AUTHOR_MIN and self.choice == FITS
+        return self.author_p >= AUTHOR_MIN and self.choice == FITS and self.p_fits >= FITS_MIN
 
     @property
     def needs_photos(self) -> bool:
@@ -134,6 +138,7 @@ def read_decisions(answers, subscriptions: Sequence[Subscription], author_key: d
     decisions = []
     for sub in subscriptions:
         choice = answers.choices[f"sub_{sub.id}"]
+        p_fits = choice.probabilities.get(FITS, 0.0)  # Jev gives {option: probability}
         decisions.append(
             Decision(
                 subscription_id=sub.id,
@@ -141,6 +146,7 @@ def read_decisions(answers, subscriptions: Sequence[Subscription], author_key: d
                 choice=choice.choice,
                 confidence=choice.confidence,
                 round=round,
+                p_fits=p_fits,
             )
         )
     return decisions

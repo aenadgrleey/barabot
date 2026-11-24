@@ -40,6 +40,7 @@ def setup_logging(level: str) -> None:
     logging.getLogger("telethon").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpx2").setLevel(logging.WARNING)
+    logging.getLogger("typesafe_sdk").setLevel(logging.WARNING)  # one line per request otherwise
 
 
 def notice(logger: logging.Logger, message: str, *args: object) -> None:

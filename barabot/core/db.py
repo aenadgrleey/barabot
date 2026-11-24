@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS matches (
     confidence      REAL    NOT NULL,
     round           INTEGER NOT NULL,
     matched         INTEGER NOT NULL,
+    p_fits          REAL    NOT NULL DEFAULT 0,
     decided_at      TEXT    NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (chat_id, album, ref, version, subscription_id)
 );
@@ -113,6 +114,7 @@ CREATE TABLE IF NOT EXISTS jev_usage (
 # does not touch existing tables, so migrate() adds them.
 _ADDED_COLUMNS = {
     "listings": {"decided_version": "INTEGER NOT NULL DEFAULT 0"},
+    "matches": {"p_fits": "REAL NOT NULL DEFAULT 0"},
 }
 
 

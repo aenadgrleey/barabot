@@ -306,12 +306,14 @@ class ListingProcessor(DBOSConfiguredInstance):
             with transaction(conn):
                 conn.executemany(
                     "INSERT INTO matches (chat_id, album, ref, version, subscription_id, author_p, choice, "
-                    "confidence, round, matched) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    "confidence, round, matched, p_fits) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                     "ON CONFLICT (chat_id, album, ref, version, subscription_id) DO UPDATE SET "
                     "author_p = excluded.author_p, choice = excluded.choice, confidence = excluded.confidence, "
-                    "round = excluded.round, matched = excluded.matched, decided_at = datetime('now')",
+                    "round = excluded.round, matched = excluded.matched, p_fits = excluded.p_fits, "
+                    "decided_at = datetime('now')",
                     [
-                        (*key, version, d.subscription_id, d.author_p, d.choice, d.confidence, d.round, int(d.matched))
+                        (*key, version, d.subscription_id, d.author_p, d.choice, d.confidence, d.round,
+                         int(d.matched), d.p_fits)
                         for d in decisions
                     ],
                 )
@@ -354,8 +356,8 @@ class ListingProcessor(DBOSConfiguredInstance):
         for d in matched:
             notice(
                 log,
-                "Match: subscription #%d «%s» (author %.2f, %s, round %d) ← %s %s",
-                d.subscription_id, queries.get(d.subscription_id, "?"), d.author_p, d.choice, d.round,
+                "Match: subscription #%d «%s» (author %.2f, fits %.2f, round %d) ← %s %s",
+                d.subscription_id, queries.get(d.subscription_id, "?"), d.author_p, d.p_fits, d.round,
                 link, snippet or "[без текста]",
             )
 
