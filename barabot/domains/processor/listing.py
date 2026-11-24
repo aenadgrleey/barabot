@@ -48,7 +48,6 @@ from pathlib import Path
 from dbos import DBOS, DBOSConfiguredInstance, Queue, SetEnqueueOptions, SetWorkflowID
 
 from barabot.core.db import ListingKey, connect, transaction
-from barabot.core.logs import notice
 from barabot.domains.processor.budget import BudgetExhausted
 from barabot.domains.processor.matching import (
     REJECTED_IMAGES,
@@ -331,7 +330,11 @@ class ListingProcessor(DBOSConfiguredInstance):
     def _log_decisions(
         self, conn, key: ListingKey, version: int, decisions: list[Decision], matched: list[Decision]
     ) -> None:
-        """One info line per decided listing; one notice per match, which aenaut-notify sends to Telegram."""
+        """One info line per decided listing and one per match; journald only, not Telegram.
+
+        Matches are too many for Telegram (about a hundred an hour on two busy
+        chats); the hourly digest counts them per subscription instead.
+        """
         listing = conn.execute(
             "SELECT l.text, min(m.msg_id) AS msg_id FROM listings l JOIN messages m "
             "ON m.chat_id = l.chat_id AND m.listing_album = l.album AND m.listing_ref = l.ref "
@@ -354,8 +357,7 @@ class ListingProcessor(DBOSConfiguredInstance):
         )
         snippet = " ".join((listing["text"] or "").split())[:160] if listing else ""
         for d in matched:
-            notice(
-                log,
+            log.info(
                 "Match: subscription #%d «%s» (author %.2f, fits %.2f, round %d) ← %s %s",
                 d.subscription_id, queries.get(d.subscription_id, "?"), d.author_p, d.p_fits, d.round,
                 link, snippet or "[без текста]",

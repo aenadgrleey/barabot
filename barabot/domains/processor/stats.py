@@ -67,6 +67,11 @@ class StatsReporter:
                 "FROM jev_usage WHERE id > ? AND id <= ?",
                 (since["usage_id"], now["usage_id"]),
             ).fetchone()
+            per_subscription = conn.execute(
+                "SELECT subscription_id, count(*) FROM matches WHERE matched = 1 AND rowid > ? AND rowid <= ? "
+                "GROUP BY subscription_id ORDER BY count(*) DESC",
+                (since["match_rowid"], now["match_rowid"]),
+            ).fetchall()
             decided = conn.execute(
                 "SELECT count(DISTINCT chat_id || ':' || album || ':' || ref || ':' || version) AS listings, "
                 "coalesce(sum(matched), 0) AS matches FROM matches WHERE rowid > ? AND rowid <= ?",
@@ -86,5 +91,7 @@ class StatsReporter:
             f"{usage['tokens']} tokens (~{avg}/request, ${self._budget.cost(usage['tokens']):.4f}); "
             f"spent {budget}"
         )
+        if per_subscription:
+            text += "; matches by subscription: " + ", ".join(f"#{sid}×{n}" for sid, n in per_subscription)
         notice(log, "%s", text)
         return text
