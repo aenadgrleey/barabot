@@ -96,6 +96,17 @@ CREATE TABLE IF NOT EXISTS matches (
     decided_at      TEXT    NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (chat_id, album, ref, version, subscription_id)
 );
+
+-- One row per request to the decision model, for the spend limit and digests.
+CREATE TABLE IF NOT EXISTS jev_usage (
+    id            INTEGER PRIMARY KEY,
+    at            TEXT    NOT NULL DEFAULT (datetime('now')),
+    round         INTEGER NOT NULL,
+    questions     INTEGER NOT NULL,
+    photos        INTEGER NOT NULL,
+    input_tokens  INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL
+);
 """
 
 # Columns added after a table first shipped: CREATE TABLE IF NOT EXISTS

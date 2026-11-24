@@ -48,6 +48,8 @@ from pathlib import Path
 from dbos import DBOS, DBOSConfiguredInstance, Queue, SetEnqueueOptions, SetWorkflowID
 
 from barabot.core.db import ListingKey, connect, transaction
+from barabot.core.logs import notice
+from barabot.domains.processor.budget import BudgetExhausted
 from barabot.domains.processor.matching import (
     REJECTED_IMAGES,
     Decider,
@@ -159,7 +161,10 @@ class ListingProcessor(DBOSConfiguredInstance):
             if subscriptions is None:
                 return "stale"
             if subscriptions:
-                decisions = await self.decide_text(snapshot.text, subscriptions)
+                first = await self.decide_text(snapshot.text, subscriptions)
+                if first is None:
+                    return "budget exhausted"  # stays undecided; redecided once the limit is raised
+                decisions = first
                 pending = {d.subscription_id for d in decisions if d.needs_photos}
                 photos = snapshot.photo_files()
                 if pending and photos:
@@ -185,8 +190,12 @@ class ListingProcessor(DBOSConfiguredInstance):
         return await asyncio.to_thread(self._load_subscriptions_blocking, key, rev, version)
 
     @DBOS.step(**_JEV_STEP)
-    async def decide_text(self, text: str, subscriptions: list[Subscription]) -> list[Decision]:
-        return await self._decider.decide(text, subscriptions)
+    async def decide_text(self, text: str, subscriptions: list[Subscription]) -> list[Decision] | None:
+        """None when the spend limit is reached."""
+        try:
+            return await self._decider.decide(text, subscriptions)
+        except BudgetExhausted:
+            return None
 
     @DBOS.step(**_JEV_STEP)
     async def decide_photos(
@@ -199,6 +208,8 @@ class ListingProcessor(DBOSConfiguredInstance):
             return None
         try:
             return await self._decider.decide(text, subscriptions, paths)
+        except BudgetExhausted:
+            return None
         except REJECTED_IMAGES as exc:
             log.warning("Jev rejected photos %s: %s", [p.name for p in paths], exc)
             return None
@@ -308,6 +319,49 @@ class ListingProcessor(DBOSConfiguredInstance):
                     "UPDATE listings SET decided_version = ? WHERE chat_id = ? AND album = ? AND ref = ? AND version = ?",
                     (version, *key, version),
                 )
+            matched = [d for d in decisions if d.matched]
+            if decisions:
+                self._log_decisions(conn, key, version, decisions, matched)
         finally:
             conn.close()
-        return sum(d.matched for d in decisions)
+        return len(matched)
+
+    def _log_decisions(
+        self, conn, key: ListingKey, version: int, decisions: list[Decision], matched: list[Decision]
+    ) -> None:
+        """One info line per decided listing; one notice per match, which aenaut-notify sends to Telegram."""
+        listing = conn.execute(
+            "SELECT l.text, min(m.msg_id) AS msg_id FROM listings l JOIN messages m "
+            "ON m.chat_id = l.chat_id AND m.listing_album = l.album AND m.listing_ref = l.ref "
+            "WHERE l.chat_id = ? AND l.album = ? AND l.ref = ?",
+            key,
+        ).fetchone()
+        link = message_link(key.chat_id, listing["msg_id"]) if listing and listing["msg_id"] else "?"
+        rounds = {d.round for d in decisions}
+        log.info(
+            "Decided %s v%d: %d subscription(s), photo round %s, %d match(es)",
+            link, version, len(decisions), "yes" if 2 in rounds else "no", len(matched),
+        )
+        if not matched:
+            return
+        queries = dict(
+            conn.execute(
+                f"SELECT id, query FROM subscriptions WHERE id IN ({','.join('?' * len(matched))})",
+                [d.subscription_id for d in matched],
+            ).fetchall()
+        )
+        snippet = " ".join((listing["text"] or "").split())[:160] if listing else ""
+        for d in matched:
+            notice(
+                log,
+                "Match: subscription #%d «%s» (author %.2f, %s, round %d) ← %s %s",
+                d.subscription_id, queries.get(d.subscription_id, "?"), d.author_p, d.choice, d.round,
+                link, snippet or "[без текста]",
+            )
+
+
+def message_link(chat_id: int, msg_id: int) -> str:
+    """t.me link to a message; works for members of the chat."""
+    if chat_id <= -1_000_000_000_000:  # channels and supergroups: -100<id>
+        return f"https://t.me/c/{-chat_id - 1_000_000_000_000}/{msg_id}"
+    return f"chat {chat_id} msg {msg_id}"

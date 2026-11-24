@@ -34,6 +34,11 @@ def _required(name: str) -> str:
     return value
 
 
+def _float(name: str, default: float | None) -> float | None:
+    raw = os.getenv(name, "").strip()
+    return float(raw) if raw else default
+
+
 def _int(name: str, default: int) -> int:
     raw = os.getenv(name)
     return int(raw) if raw else default
@@ -58,6 +63,9 @@ class Config:
     log_level: str
     backfill_hours: int
     typesafe_api_key: str
+    jev_budget_usd: float | None  # hard spend limit on Jev; None = unlimited
+    jev_price_per_m_input: float  # USD per million input tokens, used to compute spend
+    stats_interval_minutes: int  # digest period; 0 turns the digest off
 
     scraper_session_path: Path = field(
         default_factory=lambda: PROJECT_ROOT / "config" / "scraper.session"
@@ -74,6 +82,12 @@ def _validate_api_hash(value: str) -> None:
         raise RuntimeError(
             "API_HASH must be 32 hex characters (get it from https://my.telegram.org)"
         )
+
+
+def _non_negative(value, name: str):
+    if value is not None and value < 0:
+        raise RuntimeError(f"{name} must be >= 0")
+    return value
 
 
 def load() -> Config:
@@ -121,4 +135,7 @@ def load() -> Config:
         log_level=log_level,
         backfill_hours=backfill_hours,
         typesafe_api_key=_required("TYPESAFE_API_KEY"),
+        jev_budget_usd=_non_negative(_float("JEV_BUDGET_USD", None), "JEV_BUDGET_USD"),
+        jev_price_per_m_input=_non_negative(_float("JEV_PRICE_PER_M_INPUT", 0.042), "JEV_PRICE_PER_M_INPUT"),
+        stats_interval_minutes=_non_negative(_int("STATS_INTERVAL_MINUTES", 60), "STATS_INTERVAL_MINUTES"),
     )

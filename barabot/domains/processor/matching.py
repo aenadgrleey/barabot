@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Protocol
 
 from barabot.core.images import ImageSpec
+from barabot.domains.processor.budget import Budget
 from typesafe_sdk import (
     AsyncTypeSafeClient,
     Choice,
@@ -148,9 +149,10 @@ def read_decisions(answers, subscriptions: Sequence[Subscription], author_key: d
 class JevDecider:
     """One request per call: text only, or text with photos (at most JEV_IMAGES.max_images)."""
 
-    def __init__(self, client: AsyncTypeSafeClient, model: str = MODEL) -> None:
+    def __init__(self, client: AsyncTypeSafeClient, model: str = MODEL, budget: Budget | None = None) -> None:
         self._client = client
         self._model = model
+        self._budget = budget
 
     async def decide(
         self, text: str, subscriptions: Sequence[Subscription], photos: Sequence[Path] = ()
@@ -168,11 +170,26 @@ class JevDecider:
         if photos:
             state["photos"] = [Image(path) for path in photos]
             headers = IMAGES_HEADER
+        round = 2 if photos else 1
+        if self._budget is not None:
+            await self._budget.check_async()  # raises BudgetExhausted
         answers = await self._client.system_one(
             state=state, questions=questions, model=self._model, extra_headers=headers
         )
-        log.debug("Jev answered %d questions, %d input tokens", len(questions), answers.usage.input_tokens)
-        return read_decisions(answers, subscriptions, author_key, round=2 if photos else 1)
+        usage = answers.usage
+        log.info(
+            "Jev round %d: %d questions, %d photos, %d input tokens",
+            round, len(questions), len(photos), usage.input_tokens,
+        )
+        if self._budget is not None:
+            await self._budget.record_async(
+                round=round,
+                questions=len(questions),
+                photos=len(photos),
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+            )
+        return read_decisions(answers, subscriptions, author_key, round=round)
 
     async def aclose(self) -> None:
         await self._client.aclose()

@@ -53,3 +53,19 @@ def test_cli_round_trip(tmp_path, monkeypatch, capsys):
     assert main(["subscription", "remove", "1"]) == 0
     assert main(["subscription", "remove", "1"]) == 1
     assert (tmp_path / "barabot.sqlite").exists()
+
+
+def test_redecide_marks_listings_undecided(tmp_path, monkeypatch, capsys):
+    from barabot.core.db import connect, migrate
+
+    monkeypatch.setattr("barabot.core.config.DATA_DIR", tmp_path)
+    path = tmp_path / "barabot.sqlite"
+    migrate(path)
+    conn = connect(path)
+    conn.execute("INSERT INTO listings (chat_id, album, ref, rev, version, decided_version) VALUES (-1, 0, 1, 1, 1, 1), (-1, 0, 2, 1, 0, 0)")
+    conn.close()
+    assert main(["processor", "redecide"]) == 0
+    assert "1 listing(s) marked undecided" in capsys.readouterr().out
+    conn = connect(path)
+    assert conn.execute("SELECT max(decided_version) FROM listings").fetchone()[0] == 0
+    conn.close()

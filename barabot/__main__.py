@@ -56,7 +56,9 @@ from barabot.core.setup_hints import (
 )
 from barabot.domains.bot.service import BotService
 from barabot.domains.processor.listing import ListingProcessor
+from barabot.domains.processor.budget import Budget
 from barabot.domains.processor.matching import JEV_IMAGES, JevDecider
+from barabot.domains.processor.stats import StatsReporter
 from barabot.domains.scraper import ScraperService
 from barabot.domains.scraper.ingest import MessageIngest
 from barabot.domains.scraper.photos import PhotoDownloader
@@ -65,11 +67,9 @@ log = logging.getLogger("barabot")
 
 
 def _configure_logging(level: str) -> None:
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        stream=sys.stdout,
-    )
+    from barabot.core.logs import setup_logging
+
+    setup_logging(level)
 
 
 def _load_config_or_exit(*, setup_root: Path | None = None) -> Config:
@@ -113,7 +113,7 @@ def _check_config() -> int:
     return 0
 
 
-def _build_matching(cfg: Config) -> tuple[JevDecider, PhotoDownloader]:
+def _build_matching(cfg: Config, budget: Budget) -> tuple[JevDecider, PhotoDownloader]:
     """The decider and the photo downloader that suits it are chosen together.
 
     Switching models means changing this pair: the photo downloader gets
@@ -121,16 +121,38 @@ def _build_matching(cfg: Config) -> tuple[JevDecider, PhotoDownloader]:
     """
     from typesafe_sdk import AsyncTypeSafeClient
 
-    decider = JevDecider(AsyncTypeSafeClient(api_key=cfg.typesafe_api_key))
+    decider = JevDecider(AsyncTypeSafeClient(api_key=cfg.typesafe_api_key), budget=budget)
     return decider, PhotoDownloader(JEV_IMAGES, cfg.media_dir)
 
 
-def _build_services(cfg: Config, processor: ListingProcessor, photos: PhotoDownloader) -> list[Service]:
+def _build_services(
+    cfg: Config, processor: ListingProcessor, photos: PhotoDownloader, budget: Budget
+) -> list[Service]:
     """Construct all services. Add a new domain by adding one line here."""
-    return [
+    services: list[Service] = [
         ScraperService(cfg, MessageIngest(cfg.db_path, processor.schedule), photos),
         BotService(cfg, client=None),
     ]
+    if cfg.stats_interval_minutes:
+        services.append(StatsReporter(cfg.db_path, budget, interval_seconds=cfg.stats_interval_minutes * 60))
+    return services
+
+
+def _announce_start(cfg: Config, budget: Budget) -> None:
+    from barabot.core.db import connect
+    from barabot.core.logs import notice
+
+    conn = connect(cfg.db_path)
+    try:
+        active = conn.execute("SELECT count(*) FROM subscriptions WHERE active = 1").fetchone()[0]
+    finally:
+        conn.close()
+    limit = f"${budget.limit_usd:.2f}" if budget.limit_usd else "no limit"
+    notice(
+        log,
+        "barabot up: watching %d chat(s), %d active subscription(s), Jev spend $%.3f of %s",
+        len(cfg.watch_chats), active, budget.spent_usd(), limit,
+    )
 
 
 async def _run_barabot() -> None:
@@ -149,13 +171,14 @@ async def _run_barabot() -> None:
     decider: JevDecider | None = None
     try:
         db.migrate(cfg.db_path)
-        decider, photos = _build_matching(cfg)
+        budget = Budget(cfg.db_path, limit_usd=cfg.jev_budget_usd, price_per_m_input=cfg.jev_price_per_m_input)
+        decider, photos = _build_matching(cfg, budget)
         # Before launch: DBOS finds the instance by name when it recovers runs.
         processor = ListingProcessor(cfg.db_path, cfg.media_dir, decider)
         durable.launch(cfg.dbos_path)
         dbos_up = True
         await processor.open()
-        services = _build_services(cfg, processor, photos)
+        services = _build_services(cfg, processor, photos, budget)
 
         # Start every service before any can race. If one raises,
         # we tear down the already-started ones in reverse order.
@@ -179,11 +202,7 @@ async def _run_barabot() -> None:
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, _request_stop, sig)
 
-        log.info(
-            "barabot up: %d service(s), watching %d chat(s)",
-            len(services),
-            len(cfg.watch_chats),
-        )
+        _announce_start(cfg, budget)
         async with asyncio.TaskGroup() as tg:
             for svc in services:
                 tg.create_task(svc.run_forever(stop), name=type(svc).__name__)
@@ -202,6 +221,13 @@ async def _run_barabot() -> None:
         _remove_pid(cfg.pid_path)
         _release_lock(lock_fd, cfg.lock_path)
     log.info("barabot stopped cleanly")
+
+
+def _chat_arg(raw: str) -> str | int:
+    try:
+        return int(raw)
+    except ValueError:
+        return raw
 
 
 def _subscription_command(args: argparse.Namespace) -> int:
@@ -262,6 +288,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     p_processor = sub.add_parser("processor", help="Manage the processor.")
     processor_sub = p_processor.add_subparsers(dest="processor_cmd", required=True)
     processor_sub.add_parser("configure", help="Store the TypeSafe API key used to match subscriptions.")
+    processor_sub.add_parser(
+        "redecide", help="Mark every listing undecided; restart barabot and backfill re-checks recent ones."
+    )
+
+    p_scraper = sub.add_parser("scraper", help="One-off scraper commands. Stop barabot.service first.")
+    scraper_sub = p_scraper.add_subparsers(dest="scraper_cmd", required=True)
+    p_join = scraper_sub.add_parser("join", help="Join chats and print their IDs for WATCH_CHATS.")
+    p_join.add_argument("targets", nargs="+", help="@username or t.me link")
+    p_sample = scraper_sub.add_parser("sample", help="Dump recent messages of a chat as JSON lines.")
+    p_sample.add_argument("chat", help="@username or chat ID")
+    p_sample.add_argument("--limit", type=int, default=200)
+    p_sample.add_argument("--out", type=Path, required=True)
 
     p_subs = sub.add_parser("subscription", help="Manage subscriptions until the bot does.")
     subs_sub = p_subs.add_subparsers(dest="subscription_cmd", required=True)
@@ -327,6 +365,35 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.cmd == "subscription":
         return _subscription_command(args)
+
+    if args.cmd == "processor" and args.processor_cmd == "redecide":
+        from barabot.core.config import DATA_DIR
+        from barabot.core.db import connect
+
+        path = DATA_DIR / "barabot.sqlite"
+        db.migrate(path)
+        conn = connect(path)
+        try:
+            count = conn.execute("UPDATE listings SET decided_version = 0 WHERE decided_version > 0").rowcount
+        finally:
+            conn.close()
+        print(f"{count} listing(s) marked undecided. Restart barabot: backfill re-checks the last BACKFILL_HOURS.")
+        return 0
+
+    if args.cmd == "scraper":
+        from barabot.domains.scraper import admin
+
+        cfg = _load_config_or_exit()
+        _configure_logging("WARNING")
+        if args.scraper_cmd == "join":
+            joined = asyncio.run(admin.join(cfg, args.targets))
+            for chat in joined:
+                print(f"{chat['id']}  {chat['kind']:16}  {chat['status']:16}  {chat['title']}  ({chat['target']})")
+            print("WATCH_CHATS=" + ",".join(str(chat["id"]) for chat in joined))
+            return 0
+        count = asyncio.run(admin.sample(cfg, _chat_arg(args.chat), args.limit, args.out))
+        print(f"{count} message(s) written to {args.out}")
+        return 0
 
     if args.cmd == "bot" and args.bot_cmd == "auth":
         from barabot.domains.bot.auth import AuthorizationError, authorize
