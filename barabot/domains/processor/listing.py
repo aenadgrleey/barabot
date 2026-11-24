@@ -289,8 +289,11 @@ class ListingProcessor(DBOSConfiguredInstance):
             return [
                 Subscription(row["id"], row["author"], row["author_not"], row["query"])
                 for row in conn.execute(
-                    "SELECT s.id, s.author, s.author_not, s.query FROM subscriptions s "
-                    "JOIN subscription_chats c ON c.subscription_id = s.id "
+                    # DISTINCT: two chats of one subscription, such as @name and
+                    # its marked ID, can resolve to the same chat.
+                    "SELECT DISTINCT s.id, s.author, s.author_not, s.query FROM subscriptions s "
+                    "JOIN subscription_chats sc ON sc.subscription_id = s.id "
+                    "JOIN chats c ON c.id = sc.chat "
                     "WHERE c.chat_id = ? AND s.active = 1 ORDER BY s.id",
                     (key.chat_id,),
                 )

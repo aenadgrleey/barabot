@@ -3,7 +3,7 @@
 DBOS keeps its own system database next to it. This one holds the
 domain tables: `messages` written by the scraper, `listings` whose `rev`
 the scraper bumps and whose content and `version` processing writes,
-`subscriptions` with their chats written by the bot, and `matches`, the
+`subscriptions` with their `chats` written by the bot, and `matches`, the
 decision processing makes for every listing version and subscription.
 `deliveries` arrives with the notification slice.
 
@@ -25,7 +25,17 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import NamedTuple
 
-SCHEMA = """
+# Shared by SCHEMA and the migration that rebuilds the table.
+_SUBSCRIPTION_CHATS = """\
+CREATE TABLE IF NOT EXISTS subscription_chats (
+    subscription_id INTEGER NOT NULL REFERENCES subscriptions (id) ON DELETE CASCADE,
+    chat            INTEGER NOT NULL REFERENCES chats (id),
+    PRIMARY KEY (subscription_id, chat)
+);
+CREATE INDEX IF NOT EXISTS subscription_chats_by_chat ON subscription_chats (chat);
+"""
+
+SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS messages (
     chat_id       INTEGER NOT NULL,
     msg_id        INTEGER NOT NULL,
@@ -71,17 +81,32 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     author_not TEXT,
     query      TEXT    NOT NULL,
     active     INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT    NOT NULL DEFAULT (datetime('now')),
+    -- bumped when author, author_not or query change, not when chats do
+    revision   INTEGER NOT NULL DEFAULT 1
 );
+
+-- A chat as a user named it for a subscription, see barabot/core/chats.py.
+-- The bot adds the row; the scraper resolves it to chat_id, joins the chat
+-- and updates status. kind and value hold a ChatRef:
+--   username  value is the name in lower case, without @
+--   invite    value is the hash of a t.me/+hash link
+--   id        value is the marked chat ID, so chat_id is known from the start
+CREATE TABLE IF NOT EXISTS chats (
+    id         INTEGER PRIMARY KEY,
+    kind       TEXT    NOT NULL CHECK (kind IN ('username', 'invite', 'id')),
+    value      TEXT    NOT NULL,
+    chat_id    INTEGER,
+    title      TEXT,
+    status     TEXT    NOT NULL DEFAULT 'pending'
+               CHECK (status IN ('pending', 'joined', 'requested', 'failed')),
+    updated_at TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (kind, value)
+);
+CREATE INDEX IF NOT EXISTS chats_by_chat_id ON chats (chat_id);
 
 -- A subscription only sees messages from the chats its user picked.
-CREATE TABLE IF NOT EXISTS subscription_chats (
-    subscription_id INTEGER NOT NULL REFERENCES subscriptions (id) ON DELETE CASCADE,
-    chat_id         INTEGER NOT NULL,
-    PRIMARY KEY (subscription_id, chat_id)
-);
-CREATE INDEX IF NOT EXISTS subscription_chats_by_chat ON subscription_chats (chat_id);
-
+{_SUBSCRIPTION_CHATS}
 -- One row per listing version and subscription that processing checked.
 CREATE TABLE IF NOT EXISTS matches (
     chat_id         INTEGER NOT NULL,
@@ -116,6 +141,7 @@ CREATE TABLE IF NOT EXISTS jev_usage (
 _ADDED_COLUMNS = {
     "listings": {"decided_version": "INTEGER NOT NULL DEFAULT 0"},
     "matches": {"p_fits": "REAL NOT NULL DEFAULT 0"},
+    "subscriptions": {"revision": "INTEGER NOT NULL DEFAULT 1"},
 }
 
 
@@ -154,8 +180,35 @@ def migrate(path: Path) -> None:
             for column, decl in columns.items():
                 if column not in present:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+        _link_subscriptions_to_chats(conn)
     finally:
         conn.close()
+
+
+def _link_subscriptions_to_chats(conn: sqlite3.Connection) -> None:
+    """Rebuild subscription_chats of older code, which held Telegram chat IDs.
+
+    Each old chat ID becomes a `chats` row of kind `id`, pending until the
+    scraper confirms it is a member.
+    """
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(subscription_chats)")}
+    if "chat" in columns:
+        return
+    with transaction(conn):
+        conn.execute(
+            "INSERT OR IGNORE INTO chats (kind, value, chat_id) "
+            "SELECT DISTINCT 'id', CAST(chat_id AS TEXT), chat_id FROM subscription_chats"
+        )
+        conn.execute("DROP INDEX IF EXISTS subscription_chats_by_chat")
+        conn.execute("ALTER TABLE subscription_chats RENAME TO subscription_chats_old")
+        for statement in _SUBSCRIPTION_CHATS.split(";")[:-1]:
+            conn.execute(statement)
+        conn.execute(
+            "INSERT INTO subscription_chats (subscription_id, chat) "
+            "SELECT o.subscription_id, c.id FROM subscription_chats_old o "
+            "JOIN chats c ON c.kind = 'id' AND c.value = CAST(o.chat_id AS TEXT)"
+        )
+        conn.execute("DROP TABLE subscription_chats_old")
 
 
 @contextmanager

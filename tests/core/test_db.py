@@ -80,3 +80,37 @@ def test_migrate_adds_columns_to_tables_created_by_older_code(tmp_path: Path):
     conn.close()
     assert tuple(row) == (2, 0)
     assert {"subscriptions", "subscription_chats", "matches"} <= tables
+
+
+def test_migrate_moves_old_subscription_chat_ids_into_chats(tmp_path: Path):
+    path = tmp_path / "old.sqlite"
+    old = connect(path)
+    old.executescript(
+        "CREATE TABLE subscriptions (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, author TEXT NOT NULL, "
+        "author_not TEXT, query TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, "
+        "created_at TEXT NOT NULL DEFAULT (datetime('now')));"
+        "CREATE TABLE subscription_chats (subscription_id INTEGER NOT NULL REFERENCES subscriptions (id) "
+        "ON DELETE CASCADE, chat_id INTEGER NOT NULL, PRIMARY KEY (subscription_id, chat_id));"
+        "CREATE INDEX subscription_chats_by_chat ON subscription_chats (chat_id);"
+        "INSERT INTO subscriptions (id, user_id, author, query) VALUES (1, 5, 'a', 'q'), (2, 6, 'a', 'q');"
+        "INSERT INTO subscription_chats VALUES (1, -100), (1, -200), (2, -100);"
+    )
+    old.close()
+
+    migrate(path)
+    migrate(path)  # idempotent
+
+    conn = connect(path)
+    links = conn.execute(
+        "SELECT sc.subscription_id, c.kind, c.value, c.chat_id, c.status, s.revision FROM subscription_chats sc "
+        "JOIN chats c ON c.id = sc.chat JOIN subscriptions s ON s.id = sc.subscription_id "
+        "ORDER BY sc.subscription_id, c.chat_id"
+    ).fetchall()
+    tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    conn.close()
+    assert [tuple(r) for r in links] == [
+        (1, "id", "-200", -200, "pending", 1),
+        (1, "id", "-100", -100, "pending", 1),
+        (2, "id", "-100", -100, "pending", 1),
+    ]
+    assert "subscription_chats_old" not in tables

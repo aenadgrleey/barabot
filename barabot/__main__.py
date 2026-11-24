@@ -252,7 +252,7 @@ def _subscription_command(args: argparse.Namespace) -> int:
         for row in subscriptions.list_all(path):
             state = "active" if row.active else "off"
             not_part = f" | not: {row.author_not}" if row.author_not else ""
-            chats = ",".join(str(c) for c in row.chats)
+            chats = ",".join(f"{c.ref}({c.status})" for c in row.chats)
             print(
                 f"{row.id:>4} {state:6} user={row.user_id} chats={chats}\n"
                 f"     author: {row.author}{not_part}\n     query: {row.query}"
@@ -302,7 +302,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     subs_sub = p_subs.add_subparsers(dest="subscription_cmd", required=True)
     p_add = subs_sub.add_parser("add", help="Create a subscription.")
     p_add.add_argument("--user", type=int, required=True, help="Telegram user ID to notify")
-    p_add.add_argument("--chat", type=int, action="append", required=True, help="Chat ID; repeat for several")
+    p_add.add_argument(
+        "--chat", action="append", required=True, help="@username, t.me link or marked chat ID; repeat for several"
+    )
     p_add.add_argument("--author", required=True, help="What the author of a wanted message does")
     p_add.add_argument("--author-not", help="Mirror role that must not match")
     p_add.add_argument("--query", required=True, help="What the message is about")

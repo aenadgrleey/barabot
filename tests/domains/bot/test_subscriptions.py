@@ -1,7 +1,10 @@
+import sqlite3
+
 import pytest
 
 from barabot.__main__ import main
-from barabot.core.db import migrate
+from barabot.core.chats import ChatId, ChatStatus, Invite, Username, parse_chat, ref_from_row, ref_to_row
+from barabot.core.db import connect, migrate
 from barabot.domains.bot import subscriptions
 
 
@@ -18,7 +21,10 @@ def test_add_list_deactivate(db):
     )
     [row] = subscriptions.list_all(db)
     assert (row.id, row.user_id, row.author, row.author_not, row.active) == (sub_id, 5, "сдаёт жильё", None, True)
-    assert sorted(row.chats) == [-200, -100]
+    assert [(c.ref, c.chat_id, c.status) for c in row.chats] == [
+        (ChatId(-100), -100, ChatStatus.PENDING),
+        (ChatId(-200), -200, ChatStatus.PENDING),
+    ]
     assert subscriptions.deactivate(db, sub_id)
     assert not subscriptions.deactivate(db, sub_id)
     assert not subscriptions.list_all(db)[0].active
@@ -30,11 +36,56 @@ def test_add_list_deactivate(db):
         {"author": "", "query": "q", "chats": [1]},
         {"author": "a", "query": " ", "chats": [1]},
         {"author": "a", "query": "q", "chats": []},
+        {"author": "a", "query": "q", "chats": ["not a chat!"]},
+        {"author": "a", "query": "q", "chats": [42]},
     ],
 )
 def test_add_rejects_incomplete_subscriptions(db, kwargs):
     with pytest.raises(ValueError):
         subscriptions.add(db, user_id=1, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("raw", "ref"),
+    [
+        ("@NSbaraholka", Username("nsbaraholka")),
+        ("nsbaraholka", Username("nsbaraholka")),
+        ("https://t.me/NSbaraholka", Username("nsbaraholka")),
+        ("t.me/nsbaraholka/12345", Username("nsbaraholka")),
+        ("https://t.me/s/nsbaraholka", Username("nsbaraholka")),
+        ("https://t.me/+AbC-12_x", Invite("AbC-12_x")),
+        ("https://t.me/joinchat/AbC12", Invite("AbC12")),
+        (" -1001234567890 ", ChatId(-1001234567890)),
+        (-1001234567890, ChatId(-1001234567890)),
+    ],
+)
+def test_parse_chat(raw, ref):
+    assert parse_chat(raw) == ref
+
+
+@pytest.mark.parametrize("ref", [Username("chat_one"), Invite("AbC-12_x"), ChatId(-1001234567890)])
+def test_chat_ref_round_trips_through_its_row(ref):
+    assert ref_from_row(*ref_to_row(ref)) == ref
+
+
+def test_chats_reject_a_kind_or_status_outside_the_schema(db):
+    conn = connect(db)
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("INSERT INTO chats (kind, value) VALUES ('link', 'x')")
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("INSERT INTO chats (kind, value, status) VALUES ('username', 'x', 'done')")
+    conn.close()
+
+
+def test_one_chat_named_twice_is_linked_once(db):
+    sub_id = subscriptions.add(db, user_id=1, author="a", query="q", chats=["@Chat_one", "https://t.me/chat_one"])
+    other = subscriptions.add(db, user_id=2, author="a", query="q", chats=["chat_one"])
+    [row] = subscriptions.list_all(db, user_id=1)
+    assert [c.ref for c in row.chats] == [Username("chat_one")]
+    conn = connect(db)
+    assert conn.execute("SELECT count(*) FROM chats").fetchone()[0] == 1
+    conn.close()
+    assert sub_id != other
 
 
 def test_cli_round_trip(tmp_path, monkeypatch, capsys):
@@ -51,7 +102,7 @@ def test_cli_round_trip(tmp_path, monkeypatch, capsys):
                 "--chat",
                 "-100",
                 "--chat",
-                "-200",
+                "@prague_flats",
                 "--author",
                 "ищет жильё, чтобы снять",
                 "--author-not",
@@ -65,6 +116,7 @@ def test_cli_round_trip(tmp_path, monkeypatch, capsys):
     assert main(["subscription", "list"]) == 0
     out = capsys.readouterr().out
     assert "subscription 1 created" in out
+    assert "chats=-100(pending),@prague_flats(pending)" in out
     assert "not: сдаёт или продаёт жильё" in out and "query: квартира 2+kk в Праге" in out
     assert main(["subscription", "remove", "1"]) == 0
     assert main(["subscription", "remove", "1"]) == 1
@@ -72,7 +124,6 @@ def test_cli_round_trip(tmp_path, monkeypatch, capsys):
 
 
 def test_redecide_marks_listings_undecided(tmp_path, monkeypatch, capsys):
-    from barabot.core.db import connect, migrate
 
     monkeypatch.setattr("barabot.core.config.DATA_DIR", tmp_path)
     path = tmp_path / "barabot.sqlite"
