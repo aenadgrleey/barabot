@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from telethon.tl import types
 
 from barabot.core import telegram
 from barabot.domains.scraper import service
@@ -60,3 +61,9 @@ def test_failed_optional_import_starts_local_telethon(monkeypatch, tmp_path, mod
     client.is_user_authorized.assert_awaited_once()
     assert client.add_event_handler.call_count == 3
     client.disconnect.assert_awaited_once()
+
+
+def test_empty_document_is_described_without_crashing():
+    media = types.MessageMediaDocument(document=types.DocumentEmpty(id=7))
+
+    assert service.describe_media(media) == [{"type": "MessageMediaDocument"}]

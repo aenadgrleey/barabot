@@ -160,6 +160,6 @@ def describe_media(media: object) -> list[dict]:
         return []
     if isinstance(media, types.MessageMediaPhoto) and media.photo is not None:
         return [{"type": "photo", "id": media.photo.id}]
-    if isinstance(media, types.MessageMediaDocument) and media.document is not None:
+    if isinstance(media, types.MessageMediaDocument) and isinstance(media.document, types.Document):
         return [{"type": "document", "id": media.document.id, "mime": media.document.mime_type}]
     return [{"type": type(media).__name__}]
