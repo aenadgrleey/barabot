@@ -15,6 +15,7 @@ import logging
 from telethon import events
 
 from barabot.core.config import Config
+from barabot.domains.bot import reach
 from barabot.domains.bot.client import TelethonSender
 
 log = logging.getLogger(__name__)
@@ -61,3 +62,5 @@ class BotService:
     async def _on_start(self, event: events.NewMessage.Event) -> None:
         if event.is_private and event.chat_id is not None:
             await self.client.send_message(event.chat_id, welcome_text(self.cfg), parse_mode="html", link_preview=False)
+            # Start (or unblocking and pressing Start) means the bot can write again.
+            await asyncio.to_thread(reach.mark_reachable, self.cfg.db_path, event.chat_id)

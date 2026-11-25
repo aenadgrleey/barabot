@@ -143,6 +143,14 @@ CREATE TABLE IF NOT EXISTS deliveries (
     PRIMARY KEY (chat_id, album, ref, user_id)
 );
 
+-- Users the bot could not write to last time (blocked it, never pressed
+-- Start), see barabot/domains/bot/reach.py.
+CREATE TABLE IF NOT EXISTS bot_unreachable (
+    user_id INTEGER PRIMARY KEY,
+    reason  TEXT NOT NULL,  -- the Telegram error
+    since   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- The MCP connector's OAuth state, see barabot/domains/mcp/oauth.py.
 -- Codes and tokens are stored as SHA-256 hashes; times are Unix seconds.
 CREATE TABLE IF NOT EXISTS oauth_clients (

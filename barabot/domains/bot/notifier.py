@@ -56,6 +56,7 @@ from dbos._error import DBOSMaxStepRetriesExceeded
 
 from barabot.core.chats import message_link
 from barabot.core.db import ListingKey, connect, transaction
+from barabot.domains.bot import reach
 
 log = logging.getLogger(__name__)
 
@@ -182,6 +183,7 @@ class Notifier(DBOSConfiguredInstance):
                 await self._sender.edit(user_id, message_id, outgoing.message)
         except Undeliverable as exc:
             log.warning("Cannot notify user %s about %s: %s", user_id, key, exc)
+            await asyncio.to_thread(reach.mark_unreachable, self._db_path, user_id, str(exc))
             return "undeliverable"
         await asyncio.to_thread(self._record, key, version, user_id, outgoing, message_id)
         return "sent" if outgoing.message_id is None else "edited"
@@ -249,6 +251,7 @@ class Notifier(DBOSConfiguredInstance):
                     "updated_at = datetime('now')",
                     (*key, user_id, version, outgoing.state, message_id),
                 )
+                conn.execute("DELETE FROM bot_unreachable WHERE user_id = ?", (user_id,))
         finally:
             conn.close()
 

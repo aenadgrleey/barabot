@@ -154,3 +154,27 @@ def test_welcome_offers_the_connector():
     text = welcome_text(cfg)  # pyright: ignore[reportArgumentType]
     assert "<code>https://barabot.example/mcp</code>" in text
     assert "Settings &gt; Connectors" in text
+
+
+def test_start_clears_the_unreachable_mark(tmp_path):
+    import asyncio
+    from types import SimpleNamespace
+
+    from barabot.core.config import McpConfig
+    from barabot.domains.bot import reach
+    from barabot.domains.bot.service import BotService
+
+    db = tmp_path / "barabot.sqlite"
+    migrate(db)
+    reach.mark_unreachable(db, 42, "UserIsBlockedError")
+    sent = []
+
+    class Client:
+        async def send_message(self, chat_id, text, **kwargs):
+            sent.append(chat_id)
+
+    cfg = SimpleNamespace(db_path=db, mcp=McpConfig("https://barabot.example", 8765, "1", "s"))
+    service = BotService(cfg, SimpleNamespace(client=Client()))  # pyright: ignore[reportArgumentType]
+    asyncio.run(service._on_start(SimpleNamespace(is_private=True, chat_id=42)))  # pyright: ignore[reportArgumentType]
+    assert sent == [42]
+    assert reach.unreachable_reason(db, 42) is None

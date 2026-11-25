@@ -12,7 +12,7 @@ from dbos import DBOS
 
 from barabot.core import durable
 from barabot.core.db import ListingKey, connect, migrate
-from barabot.domains.bot import subscriptions
+from barabot.domains.bot import reach, subscriptions
 from barabot.domains.bot.notifier import (
     MATCHED,
     REMOVED,
@@ -205,6 +205,17 @@ def test_an_unchanged_listing_is_routed_again(tmp_path):
     run(tmp_path, scenario)
 
 
+def test_a_delivered_message_clears_the_unreachable_mark(tmp_path):
+    async def scenario(db, ingest):
+        reach.mark_unreachable(db, USER, "blocked")
+        await ingest.save_message(msg("балкон"))
+        assert await processed(1) == "version 1: 1 match(es)"
+        await notified(1)
+        assert reach.unreachable_reason(db, USER) is None
+
+    run(tmp_path, scenario)
+
+
 def test_nobody_to_tell_sends_nothing(tmp_path):
     async def scenario(db, ingest):
         await ingest.save_message(msg("без нужного слова"))
@@ -223,6 +234,7 @@ def test_an_unreachable_user_is_not_retried_or_recorded(tmp_path):
         assert await processed(1) == "version 1: 1 match(es)"
         assert await notified(1) == "5 undeliverable"
         assert delivery(db) is None
+        assert reach.unreachable_reason(db, USER) == "blocked"
 
     run(tmp_path, scenario, FakeBot(undeliverable=True))
 

@@ -25,7 +25,7 @@ import asyncio
 import contextlib
 import html
 import logging
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 from typing import Annotated, Any, Protocol
 from urllib.parse import urlsplit
@@ -44,6 +44,7 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 from barabot.api import UNSET, ApiError, BarabotApi, SubscriptionRow
 from barabot.core.config import Config, McpConfig
+from barabot.domains.bot import reach
 from barabot.domains.bot.notifier import BotSender
 from barabot.domains.mcp.oauth import BarabotOAuthProvider, LoginNotFound
 from barabot.domains.mcp.telegram_login import TelegramLogin
@@ -55,6 +56,12 @@ CALLBACK_PATH = "/telegram/callback"
 WELCOME = (
     "Barabot is connected to your assistant. Ask it to set up a subscription; "
     "matching listings will arrive in this chat."
+)
+
+BOT_BLOCKED = (
+    "Barabot cannot message this user in Telegram (they blocked the bot or never started it), "
+    "so no notification could reach them. Ask the user to open {link}, press Start (or Unblock), "
+    "and then try again."
 )
 
 BOT_UNREACHABLE_PAGE = """<!doctype html><meta charset="utf-8">
@@ -143,7 +150,19 @@ def subscription_view(row: SubscriptionRow) -> dict[str, Any]:
     }
 
 
-def build_server(api: BarabotApi, provider: BarabotOAuthProvider, public_url: str) -> MCPServer:
+def build_server(
+    api: BarabotApi,
+    provider: BarabotOAuthProvider,
+    public_url: str,
+    bot_blocked: Callable[[int], Awaitable[str | None]],
+) -> MCPServer:
+    """`bot_blocked(user_id)` says why the bot cannot write to the user, or None when it can."""
+
+    async def require_bot(user_id: int) -> None:
+        blocked = await bot_blocked(user_id)
+        if blocked:
+            raise ToolError(blocked)
+
     server = MCPServer(
         name="barabot",
         title="Barabot",
@@ -166,8 +185,13 @@ def build_server(api: BarabotApi, provider: BarabotOAuthProvider, public_url: st
         Chat status: pending (barabot has not joined yet), joined (watching),
         requested (waiting for a chat admin to approve), failed (no such chat or joining failed).
         """
-        rows = await api.list_subscriptions(_user_id())
-        return {"subscriptions": [subscription_view(row) for row in rows]}
+        user_id = _user_id()
+        rows = await api.list_subscriptions(user_id)
+        result: dict[str, Any] = {"subscriptions": [subscription_view(row) for row in rows]}
+        blocked = await bot_blocked(user_id)
+        if blocked:
+            result["notifications_blocked"] = blocked
+        return result
 
     @server.tool()
     async def add_subscription(
@@ -179,6 +203,7 @@ def build_server(api: BarabotApi, provider: BarabotOAuthProvider, public_url: st
         ] = None,
     ) -> dict[str, Any]:
         """Create a subscription. Confirm the texts with the user first; see the server instructions."""
+        await require_bot(_user_id())
         with _api_errors():
             row = await api.add_subscription(_user_id(), author=author, query=query, chats=chats, author_not=author_not)
         return subscription_view(row)
@@ -194,6 +219,7 @@ def build_server(api: BarabotApi, provider: BarabotOAuthProvider, public_url: st
         chats: Annotated[list[str] | None, Field(description="Replaces the whole chat list; omit to keep")] = None,
     ) -> dict[str, Any]:
         """Change some fields of a subscription; omitted fields stay as they are."""
+        await require_bot(_user_id())
         with _api_errors():
             row = await api.update_subscription(
                 _user_id(),
@@ -249,9 +275,15 @@ def build_app(db_path: Path, login: TelegramLogin, bot: ConnectorBot, public_url
 
     async def greet(user_id: int) -> None:
         await bot.send(user_id, WELCOME)
+        await asyncio.to_thread(reach.mark_reachable, db_path, user_id)
+
+    async def bot_blocked(user_id: int) -> str | None:
+        if await asyncio.to_thread(reach.unreachable_reason, db_path, user_id) is None:
+            return None
+        return BOT_BLOCKED.format(link=await bot.link())
 
     provider = BarabotOAuthProvider(db_path, login, greet)
-    server = build_server(BarabotApi(db_path), provider, public_url)
+    server = build_server(BarabotApi(db_path), provider, public_url, bot_blocked)
     add_login_callback(server, provider, bot)
     return server.streamable_http_app(
         stateless_http=True,  # no session state to lose on restart

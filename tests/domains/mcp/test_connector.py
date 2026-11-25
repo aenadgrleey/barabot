@@ -16,7 +16,7 @@ from jwt.algorithms import RSAAlgorithm
 from starlette.testclient import TestClient
 
 from barabot.core.db import migrate
-from barabot.domains.bot import subscriptions
+from barabot.domains.bot import reach, subscriptions
 from barabot.domains.bot.notifier import Undeliverable
 from barabot.domains.mcp.server import CALLBACK_PATH, build_app, login_bot_mismatch
 from barabot.domains.mcp.telegram_login import ISSUER, JWKS_URI, TelegramLogin, TelegramLoginError, TelegramUser
@@ -336,4 +336,22 @@ def test_login_must_belong_to_the_bot_itself(tmp_path):
     assert login_bot_mismatch(token, "123") is None
     assert "TELEGRAM_LOGIN_CLIENT_ID is bot 456, but config/bot.token is bot 123" in (
         login_bot_mismatch(token, "456") or ""
+    )
+
+
+def test_tools_refuse_new_work_while_the_bot_cannot_write(client, db):
+    _, tokens, _, _ = connect(client)
+    access = tokens["access_token"]
+    reach.mark_unreachable(db, USER_ID, "UserIsBlockedError")
+
+    added = call_tool(client, access, "add_subscription", {"author": "a", "query": "q", "chats": ["@flats"]})
+    assert added["isError"] is True
+    assert "https://t.me/barabot_test_bot" in added["content"][0]["text"]
+    listed = call_tool(client, access, "list_subscriptions", {})
+    assert "notifications_blocked" in listed["structuredContent"]
+
+    reach.mark_reachable(db, USER_ID)  # the user pressed Start
+    assert (
+        call_tool(client, access, "add_subscription", {"author": "a", "query": "q", "chats": ["@flats"]})["isError"]
+        is False
     )
