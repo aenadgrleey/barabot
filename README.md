@@ -38,6 +38,7 @@ Set `TELEGRAM_BACKEND` in `config/.env`. An exported environment variable takes 
 | `config/telegram.env` | `API_ID` and `API_HASH` of the Telegram application from [my.telegram.org](https://my.telegram.org). Required: the bot connects with them, and a local scraper session uses them too. An older `scraper.env` is renamed to it on start |
 | `config/scraper.session` | Authorized local Telethon session |
 | `config/processor.env` | `TYPESAFE_API_KEY` for subscription matching |
+| `config/mcp.env` | MCP connector: `MCP_PUBLIC_URL`, `MCP_PORT`, `TELEGRAM_LOGIN_CLIENT_ID`, `TELEGRAM_LOGIN_CLIENT_SECRET`. Required |
 | `config/bot.token` | Verified BotFather token |
 | `config/bot.session` | The bot's Telethon session, created on first start |
 
@@ -56,6 +57,25 @@ python -m barabot subscription remove 1
 ```
 
 A listing matches when Jev gives the author role at least 0.6 and answers `fits` for the query. Every check, matched or not, is stored in `matches` with the probabilities, so you can see why a listing was or was not sent.
+
+## MCP connector
+
+Users can manage subscriptions from their own agent. Barabot serves a remote MCP server at `<MCP_PUBLIC_URL>/mcp` with four tools (list, add, update, remove) over `BarabotApi`. The user adds that URL as a connector in Claude or another MCP client with OAuth and logs in with Telegram once. Barabot is the OAuth server for the client; Telegram's [OpenID Connect login](https://core.telegram.org/bots/telegram-login) tells it who the user is. The login asks for `telegram:bot_access`, so the bot can send listings without `/start`, and the bot greets the user right after the login. The code is in [barabot/domains/mcp](barabot/domains/mcp).
+
+Setup:
+
+1. In @BotFather, open the bot, then **Login Widget**. Copy the Client ID and Client Secret, and add `<MCP_PUBLIC_URL>/telegram/callback` to Allowed URLs.
+2. Publish the local port over HTTPS. On the server, with Tailscale Funnel: `tailscale funnel --bg --https=8443 http://127.0.0.1:8765`, which makes `MCP_PUBLIC_URL=https://aenaut.ilish-leaffish.ts.net:8443`.
+3. Write `config/mcp.env`:
+
+```bash
+MCP_PUBLIC_URL=https://aenaut.ilish-leaffish.ts.net:8443
+MCP_PORT=8765
+TELEGRAM_LOGIN_CLIENT_ID=...
+TELEGRAM_LOGIN_CLIENT_SECRET=...
+```
+
+Barabot does not start without this file; `run --check` prints `mcp=<url>`. OAuth clients, codes and tokens live in the `oauth_*` tables; tokens are stored as hashes. Access tokens last an hour, refresh tokens 90 days and rotate on use.
 
 ## Deploy
 

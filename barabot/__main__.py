@@ -39,8 +39,6 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from telethon import TelegramClient
-
 from barabot.core import db, durable
 from barabot.core.config import Config
 from barabot.core.locks import _acquire_lock, _release_lock, _remove_pid, _write_pid
@@ -58,6 +56,7 @@ from barabot.core.telegram import TelegramConfigError
 from barabot.domains.bot.client import TelethonSender, make_bot_client
 from barabot.domains.bot.notifier import Notifier
 from barabot.domains.bot.service import BotService
+from barabot.domains.mcp.server import McpService
 from barabot.domains.processor.budget import Budget
 from barabot.domains.processor.listing import ListingProcessor
 from barabot.domains.processor.matching import JEV_IMAGES, JevDecider
@@ -109,7 +108,10 @@ def _check_config() -> int:
         for command in dict.fromkeys([SETUP_COMMAND, *pending]):
             print(f"  {command}", file=sys.stderr)
         return 2
-    print(f"barabot config ok: scraper={cfg.telegram.backend} chats={len(cfg.watch_chats)} log_level={cfg.log_level}")
+    print(
+        f"barabot config ok: scraper={cfg.telegram.backend} chats={len(cfg.watch_chats)} "
+        f"log_level={cfg.log_level} mcp={cfg.mcp.public_url}/mcp"
+    )
     return 0
 
 
@@ -130,12 +132,13 @@ def _build_services(
     processor: ListingProcessor,
     photos: PhotoDownloader,
     budget: Budget,
-    bot_client: TelegramClient,
+    bot: TelethonSender,
 ) -> list[Service]:
     """Construct all services. Add a new domain by adding one line here."""
     services: list[Service] = [
         ScraperService(cfg, MessageIngest(cfg.db_path, processor.schedule), photos),
-        BotService(cfg, bot_client),
+        BotService(cfg, bot),
+        McpService(cfg.mcp, cfg.db_path, bot),
     ]
     if cfg.stats_interval_minutes:
         services.append(StatsReporter(cfg.db_path, budget, interval_seconds=cfg.stats_interval_minutes * 60))
@@ -180,17 +183,17 @@ async def _run_barabot() -> None:
         db.migrate(cfg.db_path)
         budget = Budget(cfg.db_path, limit_usd=cfg.jev_budget_usd, price_per_m_input=cfg.jev_price_per_m_input)
         decider, photos = _build_matching(cfg, budget)
-        # The bot client exists, unconnected, before anything that uses it:
-        # BotService connects it, Notifier sends through it.
-        bot_client = make_bot_client(cfg)
+        # The bot exists, unconnected, before anything that uses it:
+        # BotService connects its client, Notifier and the MCP connector send through it.
+        bot = TelethonSender(make_bot_client(cfg))
         # Before launch: DBOS finds the instances by name when it recovers runs.
-        notifier = Notifier(cfg.db_path, TelethonSender(bot_client))
+        notifier = Notifier(cfg.db_path, bot)
         processor = ListingProcessor(cfg.db_path, cfg.media_dir, decider, notifier)
         durable.launch(cfg.dbos_path)
         dbos_up = True
         await processor.open()
         await notifier.open()
-        services = _build_services(cfg, processor, photos, budget, bot_client)
+        services = _build_services(cfg, processor, photos, budget, bot)
 
         # Start every service before any can race. If one raises,
         # we tear down the already-started ones in reverse order.

@@ -8,6 +8,7 @@ config/telegram.env, the same application a local scraper session uses.
 from __future__ import annotations
 
 from telethon import TelegramClient, errors
+from telethon.tl.types import InputPeerUser
 
 from barabot.core.config import Config
 from barabot.domains.bot.notifier import Undeliverable
@@ -28,23 +29,42 @@ def make_bot_client(cfg: Config) -> TelegramClient:
 
 
 class TelethonSender:
-    """`BotSender` over the bot's client. Plain text; the preview of the post link shows the listing."""
+    """`BotSender` over the bot's client. Plain text; the preview of the post link shows the listing.
+
+    A user who logged in through Telegram (the MCP connector) may never have
+    written to the bot, so Telethon has no access hash for them. Bots may
+    address a user with access hash 0; Telegram answers PeerIdInvalid if
+    the bot has no right to write to that user.
+
+    It owns the bot's client: `BotService` takes `client` from here to
+    connect it and attach handlers; everything else only sends.
+    """
 
     def __init__(self, client: TelegramClient) -> None:
-        self._client = client
+        self.client = client
 
     async def send(self, user_id: int, text: str) -> int:
         try:
-            message = await self._client.send_message(user_id, text, parse_mode=None, link_preview=True)
+            try:
+                message = await self.client.send_message(user_id, text, parse_mode=None, link_preview=True)
+            except ValueError:  # Telethon: no access hash cached for this user
+                message = await self.client.send_message(
+                    InputPeerUser(user_id, 0), text, parse_mode=None, link_preview=True
+                )
         except _UNREACHABLE as exc:
             raise Undeliverable(type(exc).__name__) from exc
-        except ValueError as exc:  # Telethon: the user never wrote to the bot, so it has no access hash
+        except ValueError as exc:
             raise Undeliverable(str(exc)) from exc
         return message.id
 
     async def edit(self, user_id: int, message_id: int, text: str) -> None:
         try:
-            await self._client.edit_message(user_id, message_id, text, parse_mode=None, link_preview=True)
+            try:
+                await self.client.edit_message(user_id, message_id, text, parse_mode=None, link_preview=True)
+            except ValueError:
+                await self.client.edit_message(
+                    InputPeerUser(user_id, 0), message_id, text, parse_mode=None, link_preview=True
+                )
         except errors.MessageNotModifiedError:
             return
         except _UNREACHABLE as exc:

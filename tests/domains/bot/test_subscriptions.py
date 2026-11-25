@@ -142,3 +142,15 @@ def test_redecide_marks_listings_undecided(tmp_path, monkeypatch, capsys):
     conn = connect(path)
     assert conn.execute("SELECT max(decided_version) FROM listings").fetchone()[0] == 0
     conn.close()
+
+
+def test_welcome_offers_the_connector():
+    from types import SimpleNamespace
+
+    from barabot.core.config import McpConfig
+    from barabot.domains.bot.service import welcome_text
+
+    cfg = SimpleNamespace(mcp=McpConfig("https://barabot.example", 8765, "1", "s"))
+    text = welcome_text(cfg)  # pyright: ignore[reportArgumentType]
+    assert "<code>https://barabot.example/mcp</code>" in text
+    assert "Settings &gt; Connectors" in text

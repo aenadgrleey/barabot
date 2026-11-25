@@ -5,7 +5,8 @@ domain tables: `messages` written by the scraper, `listings` whose `rev`
 the scraper bumps and whose content and `version` processing writes,
 `subscriptions` with their `chats` written by the bot, and `matches`, the
 decision processing makes for every listing version and subscription,
-and `deliveries`, what the bot has shown each user.
+and `deliveries`, what the bot has shown each user. The `oauth_*` tables
+belong to the MCP connector.
 
 A listing's identity is derived by the schema, not by Python. Each
 message row carries generated `listing_album` and `listing_ref` columns:
@@ -141,6 +142,42 @@ CREATE TABLE IF NOT EXISTS deliveries (
     updated_at     TEXT    NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (chat_id, album, ref, user_id)
 );
+
+-- The MCP connector's OAuth state, see barabot/domains/mcp/oauth.py.
+-- Codes and tokens are stored as SHA-256 hashes; times are Unix seconds.
+CREATE TABLE IF NOT EXISTS oauth_clients (
+    client_id  TEXT PRIMARY KEY,
+    info       TEXT NOT NULL,  -- OAuthClientInformationFull as JSON
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+-- A login waiting for Telegram to call back; state is our state at Telegram.
+CREATE TABLE IF NOT EXISTS oauth_logins (
+    state      TEXT PRIMARY KEY,
+    client_id  TEXT NOT NULL,
+    request    TEXT NOT NULL,  -- the MCP client's AuthorizationParams as JSON
+    verifier   TEXT NOT NULL,  -- PKCE verifier for Telegram
+    nonce      TEXT NOT NULL,
+    expires_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS oauth_codes (
+    code_hash  TEXT PRIMARY KEY,
+    client_id  TEXT    NOT NULL,
+    user_id    INTEGER NOT NULL,
+    request    TEXT    NOT NULL,
+    expires_at REAL    NOT NULL
+);
+-- Access and refresh tokens; one grant is the pair issued together.
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+    token_hash TEXT PRIMARY KEY,
+    kind       TEXT    NOT NULL CHECK (kind IN ('access', 'refresh')),
+    grant_id   TEXT    NOT NULL,
+    client_id  TEXT    NOT NULL,
+    user_id    INTEGER NOT NULL,
+    scopes     TEXT    NOT NULL,  -- JSON list
+    resource   TEXT,
+    expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS oauth_tokens_by_grant ON oauth_tokens (grant_id);
 
 -- One row per request to the decision model, for the spend limit and digests.
 CREATE TABLE IF NOT EXISTS jev_usage (

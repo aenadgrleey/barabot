@@ -15,6 +15,10 @@ _ENV_VARS = (
     "WATCH_CHATS",
     "LOG_LEVEL",
     "TYPESAFE_API_KEY",
+    "MCP_PUBLIC_URL",
+    "MCP_PORT",
+    "TELEGRAM_LOGIN_CLIENT_ID",
+    "TELEGRAM_LOGIN_CLIENT_SECRET",
 )
 
 
@@ -38,6 +42,10 @@ def _set_valid_environment(monkeypatch: pytest.MonkeyPatch, environment: str) ->
     monkeypatch.setenv("API_ID", "12345")
     monkeypatch.setenv("API_HASH", "a" * 32)
     monkeypatch.setenv("TYPESAFE_API_KEY", "test-typesafe-key")
+    monkeypatch.setenv("MCP_PUBLIC_URL", "https://barabot.example/")
+    monkeypatch.setenv("MCP_PORT", "8765")
+    monkeypatch.setenv("TELEGRAM_LOGIN_CLIENT_ID", "1")
+    monkeypatch.setenv("TELEGRAM_LOGIN_CLIENT_SECRET", "s")
 
 
 def test_load_merges_domain_files_before_process_fallback(
@@ -55,6 +63,12 @@ def test_load_merges_domain_files_before_process_fallback(
         },
         project_root / "config" / "processor.env": {
             "TYPESAFE_API_KEY": "processor-key",
+        },
+        project_root / "config" / "mcp.env": {
+            "MCP_PUBLIC_URL": "https://barabot.example",
+            "MCP_PORT": "8765",
+            "TELEGRAM_LOGIN_CLIENT_ID": "1",
+            "TELEGRAM_LOGIN_CLIENT_SECRET": "s",
         },
         project_root / "config" / ".env": {
             "BARABOT_ENV": "develop",
@@ -128,3 +142,15 @@ def test_telegram_backend_file_and_override(tmp_path, monkeypatch):
     monkeypatch.setenv("TELEGRAM_BACKEND", "typo")
     with pytest.raises(TelegramConfigError, match="TELEGRAM_BACKEND"):
         TelegramBackend.configured(tmp_path)
+
+
+def test_mcp_config_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
+    config, _ = _import_config(monkeypatch)
+    _set_valid_environment(monkeypatch, "prod")
+    assert config.load().mcp.public_url == "https://barabot.example"
+    monkeypatch.setenv("MCP_PORT", "http")
+    with pytest.raises(RuntimeError, match="MCP_PORT must be a TCP port"):
+        config.load()
+    monkeypatch.delenv("MCP_PORT")
+    with pytest.raises(RuntimeError, match="MCP_PORT is missing.*config/mcp.env"):
+        config.load()

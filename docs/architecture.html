@@ -225,12 +225,13 @@
 <p>The step gets the bot client through <code>bot/runtime.py</code>. <code>BotService.start()</code> stores its client there, and <code>stop()</code> clears it. Nothing outside the bot domain touches this module. If the client is missing, the step raises and DBOS retries it later. The rate limit on <code>notify_queue</code> enforces the Bot API send rate.</p>
 
 <h2>User interfaces</h2>
-<p>Users manage their searches, stored as rows in <code>subscriptions</code>, through three interfaces. The interfaces differ only in how the user expresses intent. All three call the same subscription functions in the bot domain, so validation and side effects live in one place.</p>
+<p>Users manage their searches, stored as rows in <code>subscriptions</code>, through four interfaces. The interfaces differ only in how the user expresses intent. All of them call the same subscription functions in the bot domain, so validation and side effects live in one place.</p>
 <table>
   <tr><th>Interface</th><th>How the user works</th><th>Status</th></tr>
   <tr><td>Command mode</td><td>Explicit bot commands to create, list, edit, and delete searches</td><td>Planned</td></tr>
   <tr><td>Agent mode</td><td>Free text to the bot. An LLM agent turns it into calls to the same subscription functions, exposed as tools.</td><td>Experiment, enabled for part of the users</td></tr>
   <tr><td>Mini App</td><td>Telegram Mini App with forms for doing the same by hand</td><td>First version: read-only list of the user's searches</td></tr>
+  <tr><td>MCP connector</td><td>The user's own agent (Claude or another MCP client) calls the subscription functions as MCP tools. Login with Telegram's OpenID Connect; barabot is the OAuth server for the client.</td><td>Prototype in <code>barabot/domains/mcp</code>; <code>config/mcp.env</code> is required</td></tr>
 </table>
 <p><strong>Chat routing</strong></p>
 <p>Command mode and agent mode are two modes of one chat. A router in <code>BotService</code> receives every incoming message and picks the mode per user. Agent mode runs as an experiment. Users in the experiment group go to the agent, and everyone else goes to command mode.</p>

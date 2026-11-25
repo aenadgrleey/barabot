@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from barabot.core import setup
+from barabot.core import setup, setup_hints
 
 VALID_API_HASH = "0123456789abcdef0123456789abcdef"
 
@@ -128,7 +128,7 @@ def test_headless_setup_applies_complete_groups_and_rejects_partial_group(
 def test_complete_setup_loads_config(tmp_path: Path) -> None:
     config = tmp_path / "config"
     config.mkdir()
-    for name in (".env", "telegram.env", "processor.env", "bot.token"):
+    for name in (".env", "telegram.env", "processor.env", "bot.token", "mcp.env"):
         (config / name).touch()
     (config / ".env").write_text("BARABOT_ENV=develop\n")
     _authorized_session(tmp_path)
@@ -187,6 +187,12 @@ def test_gateway_setup_and_check_need_no_scraper_session(tmp_path, monkeypatch):
     # fake load_dotenv, so the check cannot rely on reading the files.
     monkeypatch.setenv("API_ID", "7")
     monkeypatch.setenv("API_HASH", VALID_API_HASH)
+    monkeypatch.setenv("MCP_PUBLIC_URL", "https://barabot.example")
+    monkeypatch.setenv("MCP_PORT", "8765")
+    monkeypatch.setenv("TELEGRAM_LOGIN_CLIENT_ID", "1")
+    monkeypatch.setenv("TELEGRAM_LOGIN_CLIENT_SECRET", "s")
+    (tmp_path / "config").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "config/mcp.env").touch()
 
     result = asyncio.run(
         setup.setup(
@@ -224,7 +230,7 @@ def test_gateway_setup_without_telegram_application_is_pending(tmp_path, monkeyp
         )
     )
     assert result == 0
-    assert setup.missing_setup_commands(tmp_path) == [setup.SETUP_COMMAND]
+    assert setup.missing_setup_commands(tmp_path) == [setup.SETUP_COMMAND, setup_hints.MCP_HINT]
 
 
 def test_headless_backend_setting_survives_incremental_setup(tmp_path):

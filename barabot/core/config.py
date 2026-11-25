@@ -51,6 +51,42 @@ def _list(name: str) -> list[int]:
 
 
 @dataclass(frozen=True)
+class McpConfig:
+    """The MCP connector, from config/mcp.env. Required: barabot does not start without it."""
+
+    public_url: str  # HTTPS origin that clients and Telegram see, without a trailing slash
+    port: int  # local port behind the HTTPS proxy, bound to 127.0.0.1
+    login_client_id: str  # Log In With Telegram, from @BotFather > Login Widget
+    login_client_secret: str
+
+
+def _mcp_value(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise RuntimeError(f"{name} is missing. Write it to config/mcp.env, see README: MCP connector.")
+    return value
+
+
+def _mcp_port() -> int:
+    raw = _mcp_value("MCP_PORT")
+    if not raw.isdigit() or not 0 < int(raw) < 65536:
+        raise RuntimeError(f"MCP_PORT must be a TCP port number, got {raw!r}")
+    return int(raw)
+
+
+def _mcp() -> McpConfig:
+    public_url = _mcp_value("MCP_PUBLIC_URL").rstrip("/")
+    if not public_url.startswith("https://"):
+        raise RuntimeError("MCP_PUBLIC_URL must be an https:// URL")
+    return McpConfig(
+        public_url=public_url,
+        port=_mcp_port(),
+        login_client_id=_mcp_value("TELEGRAM_LOGIN_CLIENT_ID"),
+        login_client_secret=_mcp_value("TELEGRAM_LOGIN_CLIENT_SECRET"),
+    )
+
+
+@dataclass(frozen=True)
 class Config:
     bot_token_path: ClassVar[Path] = PROJECT_ROOT / "config" / "bot.token"
 
@@ -65,6 +101,7 @@ class Config:
     jev_budget_usd: float | None  # hard spend limit on Jev; None = unlimited
     jev_price_per_m_input: float  # USD per million input tokens, used to compute spend
     stats_interval_minutes: int  # digest period; 0 turns the digest off
+    mcp: McpConfig
 
     scraper_session_path: Path = field(default_factory=lambda: PROJECT_ROOT / "config" / "scraper.session")
     bot_session_path: Path = field(default_factory=lambda: PROJECT_ROOT / "config" / "bot.session")
@@ -97,6 +134,7 @@ def load() -> Config:
     # local scraper session too.
     load_dotenv(telegram_env_path(PROJECT_ROOT / "config"), override=False)
     load_dotenv(PROJECT_ROOT / "config" / "processor.env", override=False)
+    load_dotenv(PROJECT_ROOT / "config" / "mcp.env", override=False)
     load_dotenv(PROJECT_ROOT / "config" / ".env", override=False)
 
     raw_environment = os.getenv("BARABOT_ENV", "").strip()
@@ -132,4 +170,5 @@ def load() -> Config:
         jev_budget_usd=_non_negative(_float("JEV_BUDGET_USD", None), "JEV_BUDGET_USD"),
         jev_price_per_m_input=_non_negative(_price(), "JEV_PRICE_PER_M_INPUT"),
         stats_interval_minutes=_non_negative(_int("STATS_INTERVAL_MINUTES", 60), "STATS_INTERVAL_MINUTES"),
+        mcp=_mcp(),
     )

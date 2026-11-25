@@ -16,6 +16,8 @@ SCRAPER_COMMAND = ".venv/bin/python -m barabot setup scraper"
 PROCESSOR_COMMAND = ".venv/bin/python -m barabot processor configure"
 BOT_COMMAND = ".venv/bin/python -m barabot bot auth <token>"
 READY_COMMAND = ".venv/bin/python -m barabot run --check"
+# No setup command writes it yet; the hint names the file and where it is described.
+MCP_HINT = "write config/mcp.env (README: MCP connector)"
 
 
 def has_local_scraper_authorization(path: Path) -> bool:
@@ -55,6 +57,8 @@ def missing_setup_commands(root: Path, transport: TelegramTransport | None = Non
         commands.append(PROCESSOR_COMMAND)
     if not (config_dir / "bot.token").exists():
         commands.append(BOT_COMMAND)
+    if not (config_dir / "mcp.env").exists():
+        commands.append(MCP_HINT)
 
     return commands
 
