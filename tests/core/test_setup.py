@@ -90,7 +90,7 @@ def test_headless_setup_applies_complete_groups_and_rejects_partial_group(
                 "API_ID": "7",
                 "API_HASH": VALID_API_HASH,
                 "TYPESAFE_API_KEY": "key",
-                "BOT_TOKEN": "token",
+                "BOT_TOKEN": "1:token",  # the same bot as TELEGRAM_LOGIN_CLIENT_ID
             },
             input_func=_fail,
             secret_input_func=_fail,
@@ -204,7 +204,7 @@ def test_gateway_setup_and_check_need_no_scraper_session(tmp_path, monkeypatch):
                 "API_ID": "7",
                 "API_HASH": VALID_API_HASH,
                 "TYPESAFE_API_KEY": "test",
-                "BOT_TOKEN": "token",
+                "BOT_TOKEN": "1:token",  # the same bot as TELEGRAM_LOGIN_CLIENT_ID
             },
             bot_authorize=lambda token, path: path.write_text(token),
         )

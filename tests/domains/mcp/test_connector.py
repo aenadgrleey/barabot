@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import time
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 import jwt
@@ -16,7 +17,8 @@ from starlette.testclient import TestClient
 
 from barabot.core.db import migrate
 from barabot.domains.bot import subscriptions
-from barabot.domains.mcp.server import CALLBACK_PATH, build_app
+from barabot.domains.bot.notifier import Undeliverable
+from barabot.domains.mcp.server import CALLBACK_PATH, build_app, login_bot_mismatch
 from barabot.domains.mcp.telegram_login import ISSUER, JWKS_URI, TelegramLogin, TelegramLoginError, TelegramUser
 
 PUBLIC = "https://barabot.example"
@@ -67,6 +69,12 @@ def greeted():
 
 
 @pytest.fixture
+def unreachable():
+    """Set to True to make the bot fail to write, as for a user who never allowed it."""
+    return SimpleNamespace(on=False)
+
+
+@pytest.fixture
 def db(tmp_path):
     path = tmp_path / "barabot.sqlite"
     migrate(path)
@@ -74,11 +82,16 @@ def db(tmp_path):
 
 
 @pytest.fixture
-def client(db, login, greeted):
+def client(db, login, greeted, unreachable):
     class Bot:
         async def send(self, user_id: int, text: str) -> int:
+            if unreachable.on:
+                raise Undeliverable("PeerIdInvalidError")
             greeted.append(user_id)
             return 1
+
+        async def link(self) -> str:
+            return "https://t.me/barabot_test_bot"
 
         async def edit(self, user_id: int, message_id: int, text: str) -> None:
             raise AssertionError("the connector only sends")
@@ -294,3 +307,33 @@ def test_id_token_signed_by_another_key_is_rejected(login):
 def test_expired_id_token_is_rejected(login):
     with pytest.raises(TelegramLoginError):
         login.verify_id_token(id_token(exp=int(time.time()) - 60), nonce="n")
+
+
+def test_no_code_when_the_bot_cannot_write_to_the_user(client, unreachable, greeted):
+    unreachable.on = True
+    reg = client.post("/register", json={"redirect_uris": [CLIENT_REDIRECT], "token_endpoint_auth_method": "none"})
+    _, challenge = pkce()
+    params = {
+        "response_type": "code",
+        "client_id": reg.json()["client_id"],
+        "redirect_uri": CLIENT_REDIRECT,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "state": "s",
+    }
+    state = query(client.get("/authorize", params=params).headers["location"])["state"]
+    page = client.get(CALLBACK_PATH, params={"code": "c", "state": state})
+    assert page.status_code == 403
+    assert "https://t.me/barabot_test_bot" in page.text
+    assert "location" not in page.headers
+    assert greeted == []
+
+
+def test_login_must_belong_to_the_bot_itself(tmp_path):
+    token = tmp_path / "bot.token"
+    assert login_bot_mismatch(token, "123") is None  # missing token: setup reports it
+    token.write_text("123:abc\n")
+    assert login_bot_mismatch(token, "123") is None
+    assert "TELEGRAM_LOGIN_CLIENT_ID is bot 456, but config/bot.token is bot 123" in (
+        login_bot_mismatch(token, "456") or ""
+    )

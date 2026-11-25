@@ -56,7 +56,7 @@ from barabot.core.telegram import TelegramConfigError
 from barabot.domains.bot.client import TelethonSender, make_bot_client
 from barabot.domains.bot.notifier import Notifier
 from barabot.domains.bot.service import BotService
-from barabot.domains.mcp.server import McpService
+from barabot.domains.mcp.server import McpService, login_bot_mismatch
 from barabot.domains.processor.budget import Budget
 from barabot.domains.processor.listing import ListingProcessor
 from barabot.domains.processor.matching import JEV_IMAGES, JevDecider
@@ -101,6 +101,10 @@ def _load_config_or_exit(*, setup_root: Path | None = None) -> Config:
 def _check_config() -> int:
     """`run --check`: validate .env, print summary, return exit code."""
     cfg = _load_config_or_exit()
+    mismatch = login_bot_mismatch(PROJECT_ROOT / "config" / "bot.token", cfg.mcp.login_client_id)
+    if mismatch:
+        print(f"config check failed: {mismatch}", file=sys.stderr)
+        return 2
     pending = missing_setup_commands(PROJECT_ROOT, cfg.telegram)
     if pending:
         print("config check failed: setup is incomplete", file=sys.stderr)

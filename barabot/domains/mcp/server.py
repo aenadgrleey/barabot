@@ -4,7 +4,8 @@ A user adds `<MCP_PUBLIC_URL>/mcp` as a connector in Claude (or any MCP
 client with OAuth), logs in with Telegram once and then manages
 subscriptions by talking to their own agent. Notifications still arrive
 from the bot; the login's `telegram:bot_access` scope lets the bot write
-first, so /start is not needed.
+first, so /start is not needed. The login only completes once the bot's
+welcome message is delivered: without it barabot cannot notify anyone.
 
     /mcp                      streamable HTTP, bearer token required
     /.well-known/...          OAuth metadata, served by the MCP SDK
@@ -22,10 +23,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import html
 import logging
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Protocol
 from urllib.parse import urlsplit
 
 import uvicorn
@@ -41,7 +43,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 from barabot.api import UNSET, ApiError, BarabotApi, SubscriptionRow
-from barabot.core.config import McpConfig
+from barabot.core.config import Config, McpConfig
 from barabot.domains.bot.notifier import BotSender
 from barabot.domains.mcp.oauth import BarabotOAuthProvider, LoginNotFound
 from barabot.domains.mcp.telegram_login import TelegramLogin
@@ -54,6 +56,36 @@ WELCOME = (
     "Barabot is connected to your assistant. Ask it to set up a subscription; "
     "matching listings will arrive in this chat."
 )
+
+BOT_UNREACHABLE_PAGE = """<!doctype html><meta charset="utf-8">
+<title>Barabot cannot message you</title>
+<p>Barabot sends matching listings as Telegram messages, and it cannot message you yet.</p>
+<p>Open <a href="{link}">the bot</a>, press Start, then connect again from your assistant.</p>
+"""
+
+
+class ConnectorBot(BotSender, Protocol):
+    async def link(self) -> str:
+        """https://t.me/<bot username>."""
+        ...
+
+
+def login_bot_mismatch(token_path: Path, login_client_id: str) -> str | None:
+    """Why the Telegram login belongs to another bot, or None when it is ours.
+
+    telegram:bot_access lets the login's bot write to the user, so it must be the bot
+    in config/bot.token. A missing token file is left to setup.
+    """
+    if not token_path.exists():
+        return None
+    bot_id = token_path.read_text(encoding="utf-8").strip().split(":", 1)[0]
+    if bot_id == login_client_id:
+        return None
+    return (
+        f"TELEGRAM_LOGIN_CLIENT_ID is bot {login_client_id}, but config/bot.token is bot {bot_id}. "
+        "Set up the Login Widget on the bot itself in @BotFather and use its client ID and secret."
+    )
+
 
 INSTRUCTIONS = """\
 Barabot watches Telegram chats (flea markets, rentals, job boards) and sends the user a bot \
@@ -188,7 +220,7 @@ def build_server(api: BarabotApi, provider: BarabotOAuthProvider, public_url: st
     return server
 
 
-def add_login_callback(server: MCPServer, provider: BarabotOAuthProvider, bot: BotSender) -> None:
+def add_login_callback(server: MCPServer, provider: BarabotOAuthProvider, bot: ConnectorBot) -> None:
     @server.custom_route(CALLBACK_PATH, methods=["GET"])
     async def telegram_callback(request: Request) -> Response:
         params = request.query_params
@@ -198,12 +230,9 @@ def add_login_callback(server: MCPServer, provider: BarabotOAuthProvider, bot: B
             return HTMLResponse(
                 "<p>This login link has expired. Start connecting again from your assistant.</p>", status_code=400
             )
-        if result.user is not None:
-            # The greeting also shows whether the bot can write to this user before any listing does.
-            try:
-                await bot.send(result.user.id, WELCOME)
-            except Exception:
-                log.exception("Could not greet Telegram user %s", result.user.id)
+        if result.bot_unreachable:
+            link = await bot.link()
+            return HTMLResponse(BOT_UNREACHABLE_PAGE.format(link=html.escape(link)), status_code=403)
         return RedirectResponse(result.redirect_url, status_code=302)
 
 
@@ -215,9 +244,13 @@ class _QuietServer(uvicorn.Server):
         yield
 
 
-def build_app(db_path: Path, login: TelegramLogin, bot: BotSender, public_url: str, *, port: int) -> Starlette:
+def build_app(db_path: Path, login: TelegramLogin, bot: ConnectorBot, public_url: str, *, port: int) -> Starlette:
     """The whole HTTP app: OAuth endpoints, the Telegram callback and /mcp."""
-    provider = BarabotOAuthProvider(db_path, login)
+
+    async def greet(user_id: int) -> None:
+        await bot.send(user_id, WELCOME)
+
+    provider = BarabotOAuthProvider(db_path, login, greet)
     server = build_server(BarabotApi(db_path), provider, public_url)
     add_login_callback(server, provider, bot)
     return server.streamable_http_app(
@@ -231,7 +264,10 @@ def build_app(db_path: Path, login: TelegramLogin, bot: BotSender, public_url: s
 
 
 class McpService:
-    def __init__(self, cfg: McpConfig, db_path: Path, bot: BotSender) -> None:
+    def __init__(self, cfg: McpConfig, db_path: Path, bot: ConnectorBot) -> None:
+        mismatch = login_bot_mismatch(Config.bot_token_path, cfg.login_client_id)
+        if mismatch:
+            raise RuntimeError(mismatch)
         self.cfg = cfg
         login = TelegramLogin(cfg.login_client_id, cfg.login_client_secret, cfg.public_url + CALLBACK_PATH)
         app = build_app(db_path, login, bot, cfg.public_url, port=cfg.port)

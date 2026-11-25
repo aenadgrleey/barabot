@@ -42,6 +42,14 @@ class TelethonSender:
 
     def __init__(self, client: TelegramClient) -> None:
         self.client = client
+        self._link: str | None = None
+
+    async def link(self) -> str:
+        """https://t.me/<bot username>, for pages that send the user to the bot."""
+        if self._link is None:
+            me = await self.client.get_me()
+            self._link = f"https://t.me/{getattr(me, 'username', '')}"
+        return self._link
 
     async def send(self, user_id: int, text: str) -> int:
         try:

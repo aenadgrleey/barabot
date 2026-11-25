@@ -24,7 +24,7 @@ import json
 import logging
 import secrets
 import time
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -58,6 +58,7 @@ class LoginNotFound(Exception):
 class LoginResult:
     redirect_url: str  # back to the MCP client, with a code or an error
     user: TelegramUser | None  # None when the login failed
+    bot_unreachable: bool = False  # Telegram said who the user is, but the bot cannot write to them
 
 
 def _hash(secret: str) -> str:
@@ -67,9 +68,12 @@ def _hash(secret: str) -> str:
 class BarabotOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, RefreshToken, AccessToken]):
     """`OAuthAuthorizationServerProvider` over `data/barabot.sqlite`."""
 
-    def __init__(self, db_path: Path, login: TelegramLogin) -> None:
+    def __init__(self, db_path: Path, login: TelegramLogin, greet: Callable[[int], Awaitable[object]]) -> None:
         self._db_path = db_path
         self._login = login
+        # Sends the welcome message. Notifications are the product, so a login whose
+        # user the bot cannot write to gets no code.
+        self._greet = greet
 
     # Clients
 
@@ -138,6 +142,18 @@ class BarabotOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, R
                     back, error="access_denied", error_description="Telegram login failed", state=params.state
                 ),
                 None,
+            )
+
+        try:
+            await self._greet(user.id)
+        except Exception as exc:
+            log.warning("Bot cannot write to Telegram user %s: %s", user.id, exc)
+            return LoginResult(
+                construct_redirect_uri(
+                    back, error="access_denied", error_description="The bot cannot message you", state=params.state
+                ),
+                user,
+                bot_unreachable=True,
             )
 
         our_code = secrets.token_urlsafe(32)
