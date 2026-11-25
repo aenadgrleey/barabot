@@ -1,22 +1,23 @@
 """The MCP connector end to end: OAuth with a fake Telegram, then tools over /mcp."""
 
 import base64
+import gzip
 import hashlib
 import io
 import json
 import time
-from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
+from jwt.algorithms import RSAAlgorithm
 from starlette.testclient import TestClient
 
 from barabot.core.db import migrate
 from barabot.domains.bot import subscriptions
 from barabot.domains.mcp.server import CALLBACK_PATH, build_app
-from barabot.domains.mcp.telegram_login import ISSUER, TelegramLogin, TelegramLoginError, TelegramUser
+from barabot.domains.mcp.telegram_login import ISSUER, JWKS_URI, TelegramLogin, TelegramLoginError, TelegramUser
 
 PUBLIC = "https://barabot.example"
 BOT_ID = "777000"
@@ -28,7 +29,7 @@ KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 def id_token(**claims):
     now = int(time.time())
     body = {"iss": ISSUER, "aud": BOT_ID, "sub": "9" * 19, "iat": now, "exp": now + 600, "id": USER_ID}
-    return jwt.encode({**body, **claims}, KEY, algorithm="RS256")
+    return jwt.encode({**body, **claims}, KEY, algorithm="RS256", headers={"kid": "k1"})
 
 
 class FakeTelegram:
@@ -37,13 +38,17 @@ class FakeTelegram:
     def __init__(self):
         self.token = id_token()
         self.requests = []
+        self.gzip = False  # oauth.telegram.org gzips responses to some servers unasked
 
     def opener(self, request, timeout):
         self.requests.append(request)
-        return io.BytesIO(json.dumps({"access_token": "tg", "token_type": "Bearer", "id_token": self.token}).encode())
-
-    def get_signing_key_from_jwt(self, _token):
-        return SimpleNamespace(key=KEY.public_key())
+        if request.full_url == JWKS_URI:
+            jwk = {**RSAAlgorithm.to_jwk(KEY.public_key(), as_dict=True), "kid": "k1", "alg": "RS256", "use": "sig"}
+            body = {"keys": [jwk]}
+        else:
+            body = {"access_token": "tg", "token_type": "Bearer", "id_token": self.token}
+        raw = json.dumps(body).encode()
+        return io.BytesIO(gzip.compress(raw) if self.gzip else raw)
 
 
 @pytest.fixture
@@ -53,7 +58,7 @@ def telegram():
 
 @pytest.fixture
 def login(telegram):
-    return TelegramLogin(BOT_ID, "secret", PUBLIC + CALLBACK_PATH, opener=telegram.opener, jwks=telegram)  # pyright: ignore[reportArgumentType]
+    return TelegramLogin(BOT_ID, "secret", PUBLIC + CALLBACK_PATH, opener=telegram.opener)
 
 
 @pytest.fixture
@@ -268,3 +273,24 @@ def test_id_token_checks(login, claims, nonce):
 def test_id_token_gives_the_numeric_user_id_not_sub(login):
     user = login.verify_id_token(id_token(name="Nash", preferred_username="nash"), nonce="n")
     assert user == TelegramUser(id=USER_ID, name="Nash", username="nash")
+
+
+def test_gzipped_telegram_responses_are_unpacked(login, telegram):
+    telegram.gzip = True
+    user = login.exchange_code("c", verifier="v", nonce="n")
+    assert user.id == USER_ID
+    assert [r.full_url for r in telegram.requests][-1] == JWKS_URI
+
+
+def test_id_token_signed_by_another_key_is_rejected(login):
+    other = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    now = int(time.time())
+    claims = {"iss": ISSUER, "aud": BOT_ID, "iat": now, "exp": now + 600, "id": USER_ID}
+    forged = jwt.encode(claims, other, algorithm="RS256", headers={"kid": "k1"})
+    with pytest.raises(TelegramLoginError):
+        login.verify_id_token(forged, nonce="n")
+
+
+def test_expired_id_token_is_rejected(login):
+    with pytest.raises(TelegramLoginError):
+        login.verify_id_token(id_token(exp=int(time.time()) - 60), nonce="n")

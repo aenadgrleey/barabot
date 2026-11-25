@@ -21,6 +21,7 @@ Network calls block; call them through `asyncio.to_thread`.
 from __future__ import annotations
 
 import base64
+import gzip
 import hashlib
 import json
 import secrets
@@ -76,13 +77,12 @@ class TelegramLogin:
         redirect_uri: str,
         *,
         opener: Callable[..., Any] = urlopen,
-        jwks: jwt.PyJWKClient | None = None,
     ) -> None:
         self.client_id = client_id
         self._client_secret = client_secret
         self.redirect_uri = redirect_uri
         self._opener = opener
-        self._jwks = jwks or jwt.PyJWKClient(JWKS_URI, cache_keys=True)
+        self._keys = TelegramKeys(opener)
 
     def start(self, state: str) -> LoginStart:
         verifier, challenge = new_pkce()
@@ -122,7 +122,7 @@ class TelegramLogin:
         )
         try:
             with self._opener(request, timeout=10.0) as response:
-                payload = json.loads(response.read())
+                payload = read_json(response)
         except Exception as exc:
             # The HTTP error may echo the request; keep it out of the message.
             raise TelegramLoginError(f"Telegram token exchange failed: {type(exc).__name__}") from None
@@ -133,7 +133,7 @@ class TelegramLogin:
 
     def verify_id_token(self, id_token: str, *, nonce: str) -> TelegramUser:
         try:
-            key = self._jwks.get_signing_key_from_jwt(id_token)
+            key = self._keys.for_token(id_token)
             claims = jwt.decode(
                 id_token,
                 key.key,
@@ -159,3 +159,41 @@ class TelegramLogin:
             name=name if isinstance(name, str) else None,
             username=username if isinstance(username, str) else None,
         )
+
+
+class TelegramKeys:
+    """Telegram's signing keys from jwks.json, fetched again when a token names an unknown kid.
+
+    We fetch them through the same opener as the token exchange instead of PyJWKClient:
+    oauth.telegram.org answers some servers with a gzip body that urllib does not unpack.
+    """
+
+    def __init__(self, opener: Callable[..., Any]) -> None:
+        self._opener = opener
+        self._keys: dict[str | None, jwt.PyJWK] = {}
+
+    def for_token(self, id_token: str) -> jwt.PyJWK:
+        kid = jwt.get_unverified_header(id_token).get("kid")
+        if kid not in self._keys:
+            self._keys = self._fetch()
+        key = self._keys.get(kid)
+        if key is None:
+            raise jwt.PyJWKClientError(f"Telegram has no signing key {kid!r}")
+        return key
+
+    def _fetch(self) -> dict[str | None, jwt.PyJWK]:
+        request = Request(JWKS_URI, headers={"Accept": "application/json"})
+        try:
+            with self._opener(request, timeout=10.0) as response:
+                jwk_set = jwt.PyJWKSet.from_dict(read_json(response))
+        except Exception as exc:
+            raise TelegramLoginError(f"Telegram keys fetch failed: {type(exc).__name__}") from None
+        return {key.key_id: key for key in jwk_set.keys}
+
+
+def read_json(response: Any) -> Any:
+    """The JSON body of a urllib response, unpacked when the server sent gzip without being asked."""
+    raw = response.read()
+    if raw[:2] == b"\x1f\x8b":
+        raw = gzip.decompress(raw)
+    return json.loads(raw)
