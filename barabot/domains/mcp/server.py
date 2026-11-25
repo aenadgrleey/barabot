@@ -59,14 +59,17 @@ WELCOME = (
 )
 
 BOT_BLOCKED = (
-    "Barabot cannot message this user in Telegram (they blocked the bot or never started it), "
-    "so no notification could reach them. Ask the user to open {link}, press Start (or Unblock), "
-    "and then try again."
+    "VERY IMPORTANT: barabot cannot message this user in Telegram (they blocked the bot or never "
+    "started it). Notifications are the whole point of barabot: without them no subscription does "
+    "anything, so new or changed subscriptions are refused. Tell the user this before anything else "
+    "and ask them to open {link}, press Start (or Unblock), and then try again."
 )
 
 BOT_UNREACHABLE_PAGE = """<!doctype html><meta charset="utf-8">
 <title>Barabot cannot message you</title>
-<p>Barabot sends matching listings as Telegram messages, and it cannot message you yet.</p>
+<h1>Very important: let the bot message you</h1>
+<p>Barabot sends matching listings as Telegram messages. Without them it does nothing for you,
+so you cannot connect until the bot can message you.</p>
 <p>Open <a href="{link}">the bot</a>, press Start, then connect again from your assistant.</p>
 """
 
@@ -108,7 +111,11 @@ A subscription has three texts, judged separately by a classifier for every post
 Write the texts in the language of the chats (usually Russian), short and literal, one role per field. \
 Put conditions on the item into query, never into author. Ask the user when the side (offering or seeking) \
 is unclear. A subscription only sees the chats it lists; take them as @username or t.me links from the user. \
-New subscriptions only see posts that arrive after they are saved.\
+New subscriptions only see posts that arrive after they are saved.
+
+VERY IMPORTANT: notifications are the whole product. If a tool result says the bot cannot message \
+the user (an error, or notifications_blocked in list_subscriptions), tell the user right away and \
+send them to the bot to press Start or Unblock. Do not continue as if their subscriptions work.\
 """
 
 NEW_SUBSCRIPTION_PROMPT = """\
