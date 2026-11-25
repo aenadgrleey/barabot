@@ -7,6 +7,7 @@ import pytest
 from telethon.tl import types
 
 from barabot.core import telegram
+from barabot.core.db import migrate
 from barabot.domains.scraper import service
 
 
@@ -42,8 +43,16 @@ def test_failed_optional_import_starts_local_telethon(monkeypatch, tmp_path, mod
     monkeypatch.setattr(telegram, "TelegramClient", constructor)
     transport = telegram.TelegramBackend.TGMUX.resolve()
     assert transport.uses_local_session
+    db = tmp_path / "barabot.sqlite"
+    migrate(db)
     cfg = SimpleNamespace(
-        telegram=transport, scraper_session_path=session, api_id=123, api_hash="a" * 32, watch_chats=[]
+        telegram=transport,
+        scraper_session_path=session,
+        api_id=123,
+        api_hash="a" * 32,
+        watch_chats=[],
+        db_path=db,
+        backfill_hours=0,
     )
     scraper = service.ScraperService(cfg, ingest=AsyncMock())
 

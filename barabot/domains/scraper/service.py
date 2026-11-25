@@ -3,6 +3,10 @@
 Live NewMessage, MessageEdited and MessageDeleted events and the startup
 backfill all go through `MessageIngest`. Photos are downloaded before
 ingest, outside its lock, so processing can show them to Jev.
+
+The scraper reads WATCH_CHATS and every chat a subscription made it join.
+`ChatJoiner` runs on the same client and adds each chat it joins to the
+watch list.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ from telethon.tl.patched import Message
 from barabot.core.config import Config
 from barabot.core.setup_hints import SCRAPER_COMMAND, has_local_scraper_authorization
 from barabot.domains.scraper.ingest import MessageIngest
+from barabot.domains.scraper.joiner import ChatJoiner
 from barabot.domains.scraper.model.event import DeletedMessages, SeenMessage
 from barabot.domains.scraper.photos import PhotoDownloader
 
@@ -32,15 +37,18 @@ class ScraperService:
         self._photos = photos
         self.client: TelegramClient | None = None
         self._ingest = ingest
-        self._chats: frozenset[int] = frozenset(cfg.watch_chats)
+        self._chats: set[int] = set(cfg.watch_chats)
         self._backfill: asyncio.Task[None] | None = None
+        self._joining: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         self.client = make_client(self.cfg)
         await connect_client(self.cfg, self.client)
 
+        joiner = ChatJoiner(self.cfg.db_path, self.client, self._chats, self._chats.add)
+        self._chats |= await asyncio.to_thread(joiner.joined_chat_ids)
         if not self._chats:
-            log.warning("WATCH_CHATS is empty; the scraper will not ingest anything")
+            log.info("No chats to watch yet; the scraper joins them as subscriptions name them")
         # Chats are filtered in the handlers instead of events.NewMessage(chats=...):
         # deletes from basic groups carry no chat_id, and explicit filtering avoids
         # entity resolution through the gateway.
@@ -48,6 +56,7 @@ class ScraperService:
         self.client.add_event_handler(self._on_message, events.MessageEdited())
         self.client.add_event_handler(self._on_deleted, events.MessageDeleted())
         self._backfill = asyncio.create_task(self._run_backfill(), name="scraper-backfill")
+        self._joining = asyncio.create_task(joiner.run_forever(), name="scraper-join")
 
     async def run_forever(self, stop: asyncio.Event) -> None:
         assert self.client is not None
@@ -61,10 +70,11 @@ class ScraperService:
             raise ConnectionError("Scraper disconnected from Telegram")
 
     async def stop(self) -> None:
-        if self._backfill is not None:
-            self._backfill.cancel()
-            await asyncio.gather(self._backfill, return_exceptions=True)
-            self._backfill = None
+        for task in (self._joining, self._backfill):
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        self._joining = self._backfill = None
         if self.client is not None:
             await self.client.disconnect()  # pyright: ignore[reportGeneralTypeIssues]  # a coroutine inside a running loop
             self.client = None
