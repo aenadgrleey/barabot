@@ -355,3 +355,16 @@ def test_tools_refuse_new_work_while_the_bot_cannot_write(client, db):
         call_tool(client, access, "add_subscription", {"author": "a", "query": "q", "chats": ["@flats"]})["isError"]
         is False
     )
+
+
+def test_every_tool_declares_whether_it_writes(client):
+    _, tokens, _, _ = connect(client)
+    tools = {
+        t["name"]: t.get("annotations") or {}
+        for t in rpc(client, tokens["access_token"], "tools/list").json()["result"]["tools"]
+    }
+    assert tools["list_subscriptions"]["readOnlyHint"] is True
+    for name in ("add_subscription", "update_subscription"):
+        assert tools[name]["readOnlyHint"] is False
+        assert tools[name]["destructiveHint"] is False
+    assert tools["remove_subscription"]["destructiveHint"] is True

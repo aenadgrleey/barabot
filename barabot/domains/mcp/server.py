@@ -200,7 +200,7 @@ def build_server(
             result["notifications_blocked"] = blocked
         return result
 
-    @server.tool()
+    @server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False))
     async def add_subscription(
         author: Annotated[str, Field(description="Role of the wanted post's author, e.g. 'сдаёт квартиру'")],
         query: Annotated[str, Field(description="What the post must be about, with the user's constraints")],
@@ -215,7 +215,7 @@ def build_server(
             row = await api.add_subscription(_user_id(), author=author, query=query, chats=chats, author_not=author_not)
         return subscription_view(row)
 
-    @server.tool()
+    @server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True))
     async def update_subscription(
         subscription_id: int,
         author: str | None = None,
