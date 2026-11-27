@@ -114,3 +114,44 @@ def test_migrate_moves_old_subscription_chat_ids_into_chats(tmp_path: Path):
         (2, "id", "-100", -100, "pending", 1),
     ]
     assert "subscription_chats_old" not in tables
+
+
+def test_migrate_rebuilds_chats_for_folder_rows(tmp_path: Path):
+    path = tmp_path / "old.sqlite"
+    old = connect(path)
+    old.executescript(
+        "CREATE TABLE subscriptions (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, author TEXT NOT NULL, "
+        "author_not TEXT, query TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, "
+        "created_at TEXT NOT NULL DEFAULT (datetime('now')));"
+        "CREATE TABLE chats ("
+        " id INTEGER PRIMARY KEY,"
+        " kind TEXT NOT NULL CHECK (kind IN ('username', 'invite', 'id')),"
+        " value TEXT NOT NULL, chat_id INTEGER, title TEXT,"
+        " status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'joined', 'requested', 'failed')),"
+        " updated_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE (kind, value));"
+        "CREATE INDEX chats_by_chat_id ON chats (chat_id);"
+        "CREATE TABLE subscription_chats (subscription_id INTEGER NOT NULL REFERENCES subscriptions (id) "
+        "ON DELETE CASCADE, chat INTEGER NOT NULL REFERENCES chats (id), PRIMARY KEY (subscription_id, chat));"
+        "INSERT INTO subscriptions (id, user_id, author, query) VALUES (1, 5, 'a', 'q');"
+        "INSERT INTO chats (id, kind, value, chat_id, title, status) "
+        "VALUES (7, 'username', 'flats', -100, 'Flats', 'joined');"
+        "INSERT INTO subscription_chats VALUES (1, 7);"
+    )
+    old.close()
+
+    migrate(path)
+    migrate(path)  # idempotent
+
+    conn = connect(path)
+    row = conn.execute("SELECT id, kind, value, chat_id, title, status, parent_id FROM chats WHERE id = 7").fetchone()
+    conn.execute("INSERT INTO chats (kind, value, status) VALUES ('list', 'Flats_2026', 'expanded')")
+    parent_id = conn.execute("SELECT id FROM chats WHERE kind = 'list'").fetchone()["id"]
+    conn.execute(
+        "INSERT INTO chats (kind, value, status, parent_id) VALUES ('username', 'child', 'joined', ?)", (parent_id,)
+    )
+    links = conn.execute("SELECT subscription_id, chat FROM subscription_chats").fetchall()
+    violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+    conn.close()
+    assert tuple(row) == (7, "username", "flats", -100, "Flats", "joined", None)
+    assert [tuple(r) for r in links] == [(1, 7)]
+    assert violations == []

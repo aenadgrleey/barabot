@@ -6,7 +6,8 @@ the scraper bumps and whose content and `version` processing writes,
 `subscriptions` with their `chats` written by the bot, and `matches`, the
 decision processing makes for every listing version and subscription,
 and `deliveries`, what the bot has shown each user. The `oauth_*` tables
-belong to the MCP connector.
+belong to the MCP connector. A `chats` row named by a folder link becomes
+`expanded`; the chats extracted from it are rows with `parent_id` set.
 
 A listing's identity is derived by the schema, not by Python. Each
 message row carries generated `listing_album` and `listing_ref` columns:
@@ -34,6 +35,23 @@ CREATE TABLE IF NOT EXISTS subscription_chats (
     PRIMARY KEY (subscription_id, chat)
 );
 CREATE INDEX IF NOT EXISTS subscription_chats_by_chat ON subscription_chats (chat);
+"""
+
+# Shared by SCHEMA and the migration that rebuilds the table.
+_CHATS = """\
+CREATE TABLE IF NOT EXISTS chats (
+    id         INTEGER PRIMARY KEY,
+    kind       TEXT    NOT NULL CHECK (kind IN ('username', 'invite', 'id', 'list')),
+    value      TEXT    NOT NULL,
+    chat_id    INTEGER,
+    title      TEXT,
+    -- the folder row a chat was extracted from; NULL for an ordinary chat
+    parent_id  INTEGER REFERENCES chats (id),
+    status     TEXT    NOT NULL DEFAULT 'pending'
+               CHECK (status IN ('pending', 'joined', 'requested', 'failed', 'expanded')),
+    updated_at TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (kind, value)
+);
 """
 
 SCHEMA = f"""
@@ -93,17 +111,9 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 --   username  value is the name in lower case, without @
 --   invite    value is the hash of a t.me/+hash link
 --   id        value is the marked chat ID, so chat_id is known from the start
-CREATE TABLE IF NOT EXISTS chats (
-    id         INTEGER PRIMARY KEY,
-    kind       TEXT    NOT NULL CHECK (kind IN ('username', 'invite', 'id')),
-    value      TEXT    NOT NULL,
-    chat_id    INTEGER,
-    title      TEXT,
-    status     TEXT    NOT NULL DEFAULT 'pending'
-               CHECK (status IN ('pending', 'joined', 'requested', 'failed')),
-    updated_at TEXT    NOT NULL DEFAULT (datetime('now')),
-    UNIQUE (kind, value)
-);
+--   list      value is the slug of a t.me/addlist folder link; the scraper
+--             expands it once into child chats, each with parent_id set
+{_CHATS}
 CREATE INDEX IF NOT EXISTS chats_by_chat_id ON chats (chat_id);
 
 -- A subscription only sees messages from the chats its user picked.
@@ -238,6 +248,7 @@ def migrate(path: Path) -> None:
     try:
         conn.execute("PRAGMA journal_mode = WAL")
         conn.executescript(SCHEMA)
+        _rebuild_chats(conn)
         for table, columns in _ADDED_COLUMNS.items():
             present = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
             for column, decl in columns.items():
@@ -246,6 +257,38 @@ def migrate(path: Path) -> None:
         _link_subscriptions_to_chats(conn)
     finally:
         conn.close()
+
+
+def _rebuild_chats(conn: sqlite3.Connection) -> None:
+    """Rebuild `chats` when its CHECK constraints predate folder rows.
+
+    Fresh databases already have the new table from SCHEMA. An old one is
+    copied into a table with the new definition so the rows, and the
+    subscription_chats links to them, survive.
+    """
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'chats'").fetchone()
+    sql = row["sql"] if row else None
+    if sql is None or ("'list'" in sql and "expanded" in sql):
+        return
+    columns = {column["name"] for column in conn.execute("PRAGMA table_info(chats)")}
+    parent_id = "parent_id" if "parent_id" in columns else "NULL"
+    # DROP TABLE chats would trip the foreign key from subscription_chats.
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        with transaction(conn):
+            conn.execute(_CHATS.replace("CREATE TABLE IF NOT EXISTS chats", "CREATE TABLE chats_new", 1))
+            conn.execute(
+                "INSERT INTO chats_new (id, kind, value, chat_id, title, parent_id, status, updated_at) "
+                f"SELECT id, kind, value, chat_id, title, {parent_id}, status, updated_at FROM chats"
+            )
+            conn.execute("DROP TABLE chats")
+            conn.execute("ALTER TABLE chats_new RENAME TO chats")
+            conn.execute("CREATE INDEX IF NOT EXISTS chats_by_chat_id ON chats (chat_id)")
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+    violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+    if violations:
+        raise RuntimeError(f"foreign key check failed after rebuilding chats: {len(violations)} violation(s)")
 
 
 def _link_subscriptions_to_chats(conn: sqlite3.Connection) -> None:

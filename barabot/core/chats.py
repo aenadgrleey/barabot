@@ -1,10 +1,11 @@
 """How a user names a chat, and where the scraper is with joining it.
 
-`ChatRef` is one of three kinds, each joined differently by the scraper:
+`ChatRef` is one of four kinds, each joined differently by the scraper:
 
     Username  @name or t.me/name    resolve the username, then join
     Invite    t.me/+hash            import the invite
     ChatId    a marked ID, -100...  already resolved; check membership
+    ChatList  t.me/addlist/slug     a shared folder; resolved into its chats
 
 The bot domain parses user input into a `ChatRef` and stores it in
 `chats` as `kind` and `value`; the scraper reads it back with
@@ -20,8 +21,10 @@ from enum import StrEnum
 
 _USERNAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{3,31}")
 _INVITE = re.compile(r"[A-Za-z0-9_-]+")
+_LIST_SLUG = re.compile(r"[A-Za-z0-9_-]+")
 _LINK = re.compile(r"(?:https?://)?(?:t|telegram)\.me/(.+)", re.IGNORECASE)
 _RESOLVE = re.compile(r"tg://resolve\?domain=([A-Za-z0-9_]+)(?:&.*)?", re.IGNORECASE)
+_ADDLIST = re.compile(r"tg://addlist\?slug=([^&#]+)(?:[&#].*)?", re.IGNORECASE)
 
 
 class ChatStatus(StrEnum):
@@ -29,6 +32,7 @@ class ChatStatus(StrEnum):
     JOINED = "joined"  # the scraper account is a member
     REQUESTED = "requested"  # waiting for an admin to approve the join request
     FAILED = "failed"  # the chat does not exist or joining failed
+    EXPANDED = "expanded"  # a folder link resolved into its chats; nothing more to do for this row
 
 
 @dataclass(frozen=True)
@@ -55,11 +59,19 @@ class ChatId:
         return str(self.id)
 
 
-ChatRef = Username | Invite | ChatId
+@dataclass(frozen=True)
+class ChatList:
+    slug: str  # case-sensitive, from a t.me/addlist link
+
+    def __str__(self) -> str:
+        return f"https://t.me/addlist/{self.slug}"
+
+
+ChatRef = Username | Invite | ChatId | ChatList
 
 
 def parse_chat(raw: str | int) -> ChatRef:
-    """Accept @username, a t.me or tg://resolve link to a chat, post, topic or invite, or a marked chat ID."""
+    """Accept @username, a t.me or tg://resolve link to a chat, post, topic, invite or folder, or a marked chat ID."""
     if isinstance(raw, int):
         return _chat_id(raw, raw)
     text = raw.strip()
@@ -68,9 +80,15 @@ def parse_chat(raw: str | int) -> ChatRef:
     resolve = _RESOLVE.fullmatch(text)
     if resolve:
         text = resolve.group(1)
+    addlist = _ADDLIST.fullmatch(text)
+    if addlist:
+        return _chat_list(addlist.group(1), raw)
     link = _LINK.fullmatch(text)
     if link:
         path = re.split(r"[?#]", link.group(1))[0].strip("/")
+        # t.me/addlist/<slug> is a shared folder; the slug is case-sensitive.
+        if path == "addlist" or path.startswith("addlist/"):
+            return _chat_list(path.removeprefix("addlist").removeprefix("/"), raw)
         # t.me/c/<id>/<msg> is a message in a private channel or supergroup.
         private = re.fullmatch(r"c/(\d+)(?:/.*)?", path)
         if private:
@@ -92,6 +110,12 @@ def parse_chat(raw: str | int) -> ChatRef:
     raise ValueError(f"not a Telegram chat: {raw}")
 
 
+def _chat_list(slug: str, raw: str | int) -> ChatList:
+    if _LIST_SLUG.fullmatch(slug):
+        return ChatList(slug)
+    raise ValueError(f"not a Telegram folder link: {raw}")
+
+
 def _chat_id(chat_id: int, raw: str | int) -> ChatId:
     # Positive IDs are users and bots, not chats with listings.
     if chat_id >= 0:
@@ -108,6 +132,8 @@ def ref_to_row(ref: ChatRef) -> tuple[str, str]:
             return "invite", hash_
         case ChatId(id_):
             return "id", str(id_)
+        case ChatList(slug):
+            return "list", slug
 
 
 def ref_from_row(kind: str, value: str) -> ChatRef:
@@ -118,6 +144,8 @@ def ref_from_row(kind: str, value: str) -> ChatRef:
             return Invite(value)
         case "id":
             return ChatId(int(value))
+        case "list":
+            return ChatList(value)
     raise ValueError(f"unknown chat kind {kind!r}")
 
 

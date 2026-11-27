@@ -56,6 +56,8 @@ python -m barabot subscription list
 python -m barabot subscription remove 1
 ```
 
+A chat reference may also be a shared folder link of the form `t.me/addlist/<slug>`. Barabot reads the folder once and then watches the chats it contained. Later edits to the folder are not followed.
+
 A listing matches when Jev gives the author role at least 0.6 and answers `fits` for the query. Every check, matched or not, is stored in `matches` with the probabilities, so you can see why a listing was or was not sent.
 
 ## MCP connector

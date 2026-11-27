@@ -3,7 +3,7 @@ import sqlite3
 import pytest
 
 from barabot.__main__ import main
-from barabot.core.chats import ChatId, ChatStatus, Invite, Username, parse_chat, ref_from_row, ref_to_row
+from barabot.core.chats import ChatId, ChatList, ChatStatus, Invite, Username, parse_chat, ref_from_row, ref_to_row
 from barabot.core.db import connect, migrate
 from barabot.domains.bot import subscriptions
 
@@ -59,6 +59,10 @@ def test_add_rejects_incomplete_subscriptions(db, kwargs):
         ("https://t.me/c/1234567890/42", ChatId(-1001234567890)),
         ("t.me/c/1234567890/5/42#x", ChatId(-1001234567890)),
         ("tg://resolve?domain=NSbaraholka&post=5", Username("nsbaraholka")),
+        ("https://t.me/addlist/AbC-12_x", ChatList("AbC-12_x")),
+        ("t.me/addlist/Flats_2026?ref=x#top", ChatList("Flats_2026")),
+        ("telegram.me/addlist/Flats", ChatList("Flats")),
+        ("tg://addlist?slug=AbC-12_x&ref=x", ChatList("AbC-12_x")),
         (" -1001234567890 ", ChatId(-1001234567890)),
         (-1001234567890, ChatId(-1001234567890)),
     ],
@@ -67,7 +71,15 @@ def test_parse_chat(raw, ref):
     assert parse_chat(raw) == ref
 
 
-@pytest.mark.parametrize("ref", [Username("chat_one"), Invite("AbC-12_x"), ChatId(-1001234567890)])
+@pytest.mark.parametrize("raw", ["t.me/addlist/", "t.me/addlist/bad.slug", "tg://addlist?slug="])
+def test_parse_chat_rejects_a_malformed_folder_slug(raw):
+    with pytest.raises(ValueError):
+        parse_chat(raw)
+
+
+@pytest.mark.parametrize(
+    "ref", [Username("chat_one"), Invite("AbC-12_x"), ChatId(-1001234567890), ChatList("AbC-12_x")]
+)
 def test_chat_ref_round_trips_through_its_row(ref):
     assert ref_from_row(*ref_to_row(ref)) == ref
 

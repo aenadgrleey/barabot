@@ -14,6 +14,11 @@ joins them one at a time and writes back the status, the chat ID and the
 title. A joined chat is handed to `on_joined`, which adds it to the
 scraper's watch list right away.
 
+A folder link (`t.me/addlist/<slug>`) is read once: its channels are
+joined like any other chat, each becomes a `chats` row whose `parent_id`
+is the folder row, and the folder row becomes `expanded`. Later edits to
+the folder are not followed.
+
 Telegram limits joins, so there is a pause between them, and a FloodWait
 ends the round and waits as long as Telegram asks.
 """
@@ -29,13 +34,14 @@ from typing import Any
 
 from telethon import errors, functions, types, utils
 
-from barabot.core.chats import ChatId, ChatRef, ChatStatus, Invite, Username, ref_from_row
+from barabot.core.chats import ChatId, ChatList, ChatRef, ChatStatus, Invite, Username, ref_from_row
 from barabot.core.db import connect, transaction
 
 log = logging.getLogger(__name__)
 
 ROUND_INTERVAL = 30.0  # seconds between rounds when there is nothing to do
 JOIN_PAUSE = 10.0  # seconds between two joins
+MAX_LIST_CHATS = 50  # channels taken from one folder link
 REQUESTED_RETRY = "-15 minutes"  # SQLite datetime modifiers
 FAILED_RETRY = "-1 day"
 
@@ -51,6 +57,10 @@ _GONE = (
     errors.ChatInvalidError,
     errors.UserBannedInChannelError,
 )
+
+# Telethon 1.46 has no classes for a dead folder link, so the RPC message is
+# all we get. Without this, such a link would raise every round forever.
+_SLUG_GONE = ("INVITE_SLUG_EXPIRED", "INVITE_SLUG_EMPTY")
 
 
 @dataclass(frozen=True)
@@ -70,8 +80,37 @@ class Due:
     status: ChatStatus
 
 
+@dataclass(frozen=True)
+class Child:
+    """A chat extracted from a folder link, before its row is written."""
+
+    kind: str
+    value: str
+    outcome: Outcome
+
+
 def _joined(entity: Any) -> Outcome:
     return Outcome(ChatStatus.JOINED, utils.get_peer_id(entity), getattr(entity, "title", None))
+
+
+def _child(channel: types.Channel, outcome: Outcome) -> Child:
+    chat_id = utils.get_peer_id(channel)
+    if channel.username:
+        return Child("username", channel.username.lower(), outcome)
+    return Child("id", str(chat_id), outcome)
+
+
+def _unusable_slug(exc: errors.RPCError) -> bool:
+    """True when Telegram says this folder link will never work."""
+    if isinstance(exc, _GONE):
+        return True
+    return any((exc.message or "").startswith(code) for code in _SLUG_GONE)
+
+
+def _reason(exc: errors.RPCError) -> str:
+    if isinstance(exc, _GONE):
+        return type(exc).__name__
+    return exc.message or type(exc).__name__
 
 
 async def join(client: Any, ref: ChatRef, watched: Collection[int]) -> Outcome:
@@ -160,6 +199,9 @@ class ChatJoiner:
         for n, chat in enumerate(due):
             if n:
                 await asyncio.sleep(self._pause)
+            if isinstance(chat.ref, ChatList):
+                await self._expand(chat.id, chat.ref)
+                continue
             outcome = await join(self._client, chat.ref, self._watched)
             await asyncio.to_thread(self._save, chat.id, outcome)
             if outcome.status is ChatStatus.JOINED and outcome.chat_id is not None:
@@ -170,6 +212,51 @@ class ChatJoiner:
             else:
                 log.warning("Cannot join %s: %s", chat.ref, outcome.reason)
         return len(due)
+
+    async def _expand(self, row_id: int, ref: ChatList) -> None:
+        """Read a folder once, join its channels, and write them in one transaction."""
+        try:
+            result = await self._client(functions.chatlists.CheckChatlistInviteRequest(ref.slug))
+        except errors.RPCError as exc:
+            if not _unusable_slug(exc):
+                raise
+            outcome = Outcome(ChatStatus.FAILED, reason=_reason(exc))
+            await asyncio.to_thread(self._save, row_id, outcome)
+            log.warning("Cannot read folder %s: %s", ref, outcome.reason)
+            return
+        title = result.title.text if isinstance(result, types.chatlists.ChatlistInvite) else None
+        found = [chat for chat in result.chats if isinstance(chat, types.Channel)]
+        channels = found[:MAX_LIST_CHATS]
+        if len(found) > MAX_LIST_CHATS:
+            log.warning(
+                "Folder %s has more than %s channels; reading only the first %s", ref, MAX_LIST_CHATS, MAX_LIST_CHATS
+            )
+        if not channels:
+            outcome = Outcome(ChatStatus.FAILED, title=title, reason="the folder contains no channels")
+            await asyncio.to_thread(self._save, row_id, outcome)
+            log.warning("Cannot expand %s: %s", ref, outcome.reason)
+            return
+        children: list[Child] = []
+        for n, channel in enumerate(channels):
+            if n:
+                await asyncio.sleep(self._pause)
+            children.append(_child(channel, await self._join_channel(channel)))
+        joined = await asyncio.to_thread(self._save_expansion, row_id, title, children)
+        for chat_id in joined:
+            log.info("Joined chat %s from folder %s", chat_id, ref)
+            self._on_joined(chat_id)
+
+    async def _join_channel(self, channel: types.Channel) -> Outcome:
+        """Join one channel extracted from a folder. FloodWait and unknown errors propagate."""
+        try:
+            await self._client(functions.channels.JoinChannelRequest(channel))  # pyright: ignore[reportArgumentType]  # Telethon converts the entity
+        except errors.UserAlreadyParticipantError:
+            return _joined(channel)
+        except errors.InviteRequestSentError:
+            return Outcome(ChatStatus.REQUESTED, utils.get_peer_id(channel), channel.title)
+        except _GONE as exc:
+            return Outcome(ChatStatus.FAILED, utils.get_peer_id(channel), channel.title, type(exc).__name__)
+        return _joined(channel)
 
     def joined_chat_ids(self) -> set[int]:
         """Chats joined before, to watch from the start."""
@@ -208,3 +295,54 @@ class ChatJoiner:
                 )
         finally:
             conn.close()
+
+    def _save_expansion(self, parent_id: int, title: str | None, children: list[Child]) -> list[int]:
+        """Write the folder row and its children in one transaction; return joined chat IDs."""
+        conn = connect(self._db_path)
+        joined: list[int] = []
+        try:
+            with transaction(conn):
+                conn.execute(
+                    "UPDATE chats SET status = ?, title = COALESCE(?, title), updated_at = datetime('now') "
+                    "WHERE id = ?",
+                    (ChatStatus.EXPANDED.value, title, parent_id),
+                )
+                for child in children:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO chats (kind, value, chat_id, title, parent_id, status) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (
+                            child.kind,
+                            child.value,
+                            child.outcome.chat_id,
+                            child.outcome.title,
+                            parent_id,
+                            child.outcome.status.value,
+                        ),
+                    )
+                    conn.execute(
+                        "UPDATE chats SET title = ?, parent_id = COALESCE(parent_id, ?), chat_id = ?, status = ?, "
+                        "updated_at = datetime('now') WHERE kind = ? AND value = ?",
+                        (
+                            child.outcome.title,
+                            parent_id,
+                            child.outcome.chat_id,
+                            child.outcome.status.value,
+                            child.kind,
+                            child.value,
+                        ),
+                    )
+                    child_id = conn.execute(
+                        "SELECT id FROM chats WHERE kind = ? AND value = ?", (child.kind, child.value)
+                    ).fetchone()["id"]
+                    # Every subscription that named the folder also names the extracted chat.
+                    conn.execute(
+                        "INSERT OR IGNORE INTO subscription_chats (subscription_id, chat) "
+                        "SELECT sc.subscription_id, ? FROM subscription_chats sc WHERE sc.chat = ?",
+                        (child_id, parent_id),
+                    )
+                    if child.outcome.status is ChatStatus.JOINED and child.outcome.chat_id is not None:
+                        joined.append(child.outcome.chat_id)
+        finally:
+            conn.close()
+        return joined
