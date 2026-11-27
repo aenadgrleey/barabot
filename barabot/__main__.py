@@ -61,7 +61,7 @@ from barabot.domains.processor.budget import Budget
 from barabot.domains.processor.listing import ListingProcessor
 from barabot.domains.processor.matching import JEV_IMAGES, JevDecider
 from barabot.domains.processor.stats import StatsReporter
-from barabot.domains.scraper import ScraperService
+from barabot.domains.scraper import JoinerService, ScraperService
 from barabot.domains.scraper.ingest import MessageIngest
 from barabot.domains.scraper.photos import PhotoDownloader
 
@@ -139,8 +139,10 @@ def _build_services(
     bot: TelethonSender,
 ) -> list[Service]:
     """Construct all services. Add a new domain by adding one line here."""
+    scraper = ScraperService(cfg, MessageIngest(cfg.db_path, processor.schedule), photos)
     services: list[Service] = [
-        ScraperService(cfg, MessageIngest(cfg.db_path, processor.schedule), photos),
+        scraper,
+        JoinerService(cfg.db_path, scraper),  # after the scraper: it joins on the scraper's client
         BotService(cfg, bot),
         McpService(cfg.mcp, cfg.db_path, bot),
     ]

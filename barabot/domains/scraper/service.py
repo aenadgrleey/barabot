@@ -5,8 +5,8 @@ backfill all go through `MessageIngest`. Photos are downloaded before
 ingest, outside its lock, so processing can show them to Jev.
 
 The scraper reads WATCH_CHATS and every chat a subscription made it join.
-`ChatJoiner` runs on the same client and adds each chat it joins to the
-watch list.
+`JoinerService` joins new chats on this client and adds each one to the
+watch list through `watch`.
 """
 
 from __future__ import annotations
@@ -15,15 +15,16 @@ import asyncio
 import logging
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from telethon import TelegramClient, events
 from telethon.tl import types
 from telethon.tl.patched import Message
 
 from barabot.core.config import Config
+from barabot.core.db import connect
 from barabot.core.setup_hints import SCRAPER_COMMAND, has_local_scraper_authorization
 from barabot.domains.scraper.ingest import MessageIngest
-from barabot.domains.scraper.joiner import ChatJoiner
 from barabot.domains.scraper.model.event import DeletedMessages, SeenMessage
 from barabot.domains.scraper.photos import PhotoDownloader
 
@@ -39,14 +40,20 @@ class ScraperService:
         self._ingest = ingest
         self._chats: set[int] = set(cfg.watch_chats)
         self._backfill: asyncio.Task[None] | None = None
-        self._joining: asyncio.Task[None] | None = None
+
+    @property
+    def watched(self) -> set[int]:
+        """The live watch list. Read it; add through `watch`."""
+        return self._chats
+
+    def watch(self, chat_id: int) -> None:
+        self._chats.add(chat_id)
 
     async def start(self) -> None:
         self.client = make_client(self.cfg)
         await connect_client(self.cfg, self.client)
 
-        joiner = ChatJoiner(self.cfg.db_path, self.client, self._chats, self._chats.add)
-        self._chats |= await asyncio.to_thread(joiner.joined_chat_ids)
+        self._chats |= await asyncio.to_thread(joined_chat_ids, self.cfg.db_path)
         if not self._chats:
             log.info("No chats to watch yet; the scraper joins them as subscriptions name them")
         # Chats are filtered in the handlers instead of events.NewMessage(chats=...):
@@ -56,7 +63,6 @@ class ScraperService:
         self.client.add_event_handler(self._on_message, events.MessageEdited())
         self.client.add_event_handler(self._on_deleted, events.MessageDeleted())
         self._backfill = asyncio.create_task(self._run_backfill(), name="scraper-backfill")
-        self._joining = asyncio.create_task(joiner.run_forever(), name="scraper-join")
 
     async def run_forever(self, stop: asyncio.Event) -> None:
         assert self.client is not None
@@ -70,11 +76,10 @@ class ScraperService:
             raise ConnectionError("Scraper disconnected from Telegram")
 
     async def stop(self) -> None:
-        for task in (self._joining, self._backfill):
-            if task is not None:
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
-        self._joining = self._backfill = None
+        if self._backfill is not None:
+            self._backfill.cancel()
+            await asyncio.gather(self._backfill, return_exceptions=True)
+            self._backfill = None
         if self.client is not None:
             await self.client.disconnect()  # pyright: ignore[reportGeneralTypeIssues]  # a coroutine inside a running loop
             self.client = None
@@ -128,6 +133,16 @@ class ScraperService:
                 log.exception("Backfill failed for chat %s", chat_id)
                 continue
             log.info("Backfilled %d message(s) from chat %s", count, chat_id)
+
+
+def joined_chat_ids(db_path: Path) -> set[int]:
+    """Chats joined before, to watch from the start."""
+    conn = connect(db_path)
+    try:
+        rows = conn.execute("SELECT chat_id FROM chats WHERE status = 'joined' AND chat_id IS NOT NULL")
+        return {row["chat_id"] for row in rows}
+    finally:
+        conn.close()
 
 
 def make_client(cfg: Config) -> TelegramClient:

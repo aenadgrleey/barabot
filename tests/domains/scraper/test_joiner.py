@@ -7,7 +7,8 @@ from telethon import errors, functions, types
 from barabot.core.chats import ChatStatus
 from barabot.core.db import connect, migrate
 from barabot.domains.bot import subscriptions
-from barabot.domains.scraper.joiner import ChatJoiner
+from barabot.domains.scraper.joiner import ChatJoiner, JoinerService
+from barabot.domains.scraper.service import joined_chat_ids
 
 USER = 4242
 
@@ -194,8 +195,7 @@ def test_flood_wait_stops_the_round_and_keeps_the_chat_pending(db):
 def test_joined_chats_are_watched_after_a_restart(db):
     subscriptions.add(db, user_id=USER, author="a", query="q", chats=["@flats"])
     run(db, FakeClient())
-    joiner = ChatJoiner(db, FakeClient(), set(), lambda _: None)
-    assert joiner.joined_chat_ids() == {-1000000000111}
+    assert joined_chat_ids(db) == {-1000000000111}
 
 
 def test_folder_link_expands_into_its_channels_once(db):
@@ -277,3 +277,31 @@ def test_folder_without_channels_fails(db, caplog):
     assert chats(db)["list:Empty"] == ("failed", None, "Empty folder")
     assert "no channels" in caplog.text
     assert run(db, client)[0] == 0
+
+
+def test_service_joins_on_the_scrapers_client_until_stopped(db):
+    subscriptions.add(db, user_id=USER, author="a", query="q", chats=["@flats"])
+
+    class Scraper:
+        def __init__(self):
+            self.client = FakeClient()
+            self.watched = set()
+
+        def watch(self, chat_id):
+            self.watched.add(chat_id)
+
+    scraper = Scraper()
+    joiner = JoinerService(db, scraper)
+
+    async def scenario():
+        await joiner.start()
+        while not scraper.watched:
+            await asyncio.sleep(0.01)
+        stop = asyncio.Event()
+        stop.set()
+        await joiner.run_forever(stop)
+        await joiner.stop()
+
+    asyncio.run(asyncio.wait_for(scenario(), 5))
+    assert scraper.watched == {-1000000000111}
+    assert chats(db)["username:flats"][0] == ChatStatus.JOINED

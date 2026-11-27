@@ -1,9 +1,10 @@
 """Join the chats that subscriptions name, so the scraper can read them.
 
 Saving a subscription only stores its chats as `pending` (see
-barabot/domains/bot/subscriptions.py). `ChatJoiner` runs inside the
-scraper, on its Telegram client: through tgmux, a join made by the
-barabot integration is also what assigns the chat to barabot. Each round
+barabot/domains/bot/subscriptions.py). `JoinerService` runs `ChatJoiner`
+as its own service on the scraper's Telegram client: through tgmux, a
+join made by the barabot integration is also what assigns the chat to
+barabot. Each round
 it takes the chats that an active subscription points to and that are
 
     pending     not tried yet
@@ -12,7 +13,8 @@ it takes the chats that an active subscription points to and that are
 
 joins them one at a time and writes back the status, the chat ID and the
 title. A joined chat is handed to `on_joined`, which adds it to the
-scraper's watch list right away.
+scraper's watch list right away. The scraper starts before the joiner and
+stops after it, so the client is connected for the joiner's whole life.
 
 A folder link (`t.me/addlist/<slug>`) is read once: its channels are
 joined like any other chat, each becomes a `chats` row whose `parent_id`
@@ -30,7 +32,7 @@ import logging
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from telethon import errors, functions, types, utils
 
@@ -258,15 +260,6 @@ class ChatJoiner:
             return Outcome(ChatStatus.FAILED, utils.get_peer_id(channel), channel.title, type(exc).__name__)
         return _joined(channel)
 
-    def joined_chat_ids(self) -> set[int]:
-        """Chats joined before, to watch from the start."""
-        conn = connect(self._db_path)
-        try:
-            rows = conn.execute("SELECT chat_id FROM chats WHERE status = 'joined' AND chat_id IS NOT NULL")
-            return {row["chat_id"] for row in rows}
-        finally:
-            conn.close()
-
     def _due(self) -> list[Due]:
         conn = connect(self._db_path)
         try:
@@ -346,3 +339,46 @@ class ChatJoiner:
         finally:
             conn.close()
         return joined
+
+
+class Watcher(Protocol):
+    """What the joiner needs from the scraper, once the scraper has started."""
+
+    @property
+    def client(self) -> Any: ...
+
+    @property
+    def watched(self) -> Collection[int]: ...
+
+    def watch(self, chat_id: int) -> None: ...
+
+
+class JoinerService:
+    """`ChatJoiner` as a service: rounds run in a task from start() until stop()."""
+
+    def __init__(self, db_path: Path, scraper: Watcher) -> None:
+        self._db_path = db_path
+        self._scraper = scraper
+        self._task: asyncio.Task[None] | None = None
+
+    async def start(self) -> None:
+        assert self._scraper.client is not None, "the scraper starts first"
+        joiner = ChatJoiner(self._db_path, self._scraper.client, self._scraper.watched, self._scraper.watch)
+        self._task = asyncio.create_task(joiner.run_forever(), name="joiner")
+
+    async def run_forever(self, stop: asyncio.Event) -> None:
+        assert self._task is not None, "start() runs first"
+        stopping = asyncio.create_task(stop.wait())
+        try:
+            await asyncio.wait((stopping, self._task), return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            stopping.cancel()
+        if not stop.is_set():
+            self._task.result()  # rounds catch errors, so only something fatal ends the task
+            raise RuntimeError("Joiner stopped")
+
+    async def stop(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
+            self._task = None
