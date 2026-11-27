@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import ClassVar
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -78,6 +79,12 @@ def _mcp() -> McpConfig:
     public_url = _mcp_value("MCP_PUBLIC_URL").rstrip("/")
     if not public_url.startswith("https://"):
         raise RuntimeError("MCP_PUBLIC_URL must be an https:// URL")
+    # Claude connects from Anthropic's servers and refuses a URL that names a port.
+    if re.search(r":\d*$", urlsplit(public_url).netloc):
+        raise RuntimeError(
+            f"MCP_PUBLIC_URL must not name a port, got {public_url!r}. "
+            "Claude only connects to the standard HTTPS port 443; publish the connector there."
+        )
     return McpConfig(
         public_url=public_url,
         port=_mcp_port(),

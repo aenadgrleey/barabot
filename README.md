@@ -65,11 +65,11 @@ Users can manage subscriptions from their own agent. Barabot serves a remote MCP
 Setup:
 
 1. In @BotFather, open the bot, then **Login Widget**. Copy the Client ID and Client Secret, and add `<MCP_PUBLIC_URL>/telegram/callback` to Allowed URLs.
-2. Publish the local port over HTTPS. On the server, with Tailscale Funnel: `tailscale funnel --bg --https=8443 http://127.0.0.1:8765`, which makes `MCP_PUBLIC_URL=https://aenaut.ilish-leaffish.ts.net:8443`.
+2. Publish the local port over HTTPS on port 443. Claude connects from Anthropic's servers and [cannot use a URL that names a port](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp), so barabot refuses an `MCP_PUBLIC_URL` with one. On the server, with Tailscale Funnel: `tailscale funnel --bg --https=443 http://127.0.0.1:8765`, which makes `MCP_PUBLIC_URL=https://aenaut.ilish-leaffish.ts.net`.
 3. Write `config/mcp.env`:
 
 ```bash
-MCP_PUBLIC_URL=https://aenaut.ilish-leaffish.ts.net:8443
+MCP_PUBLIC_URL=https://aenaut.ilish-leaffish.ts.net
 MCP_PORT=8765
 TELEGRAM_LOGIN_CLIENT_ID=...
 TELEGRAM_LOGIN_CLIENT_SECRET=...

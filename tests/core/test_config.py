@@ -154,3 +154,12 @@ def test_mcp_config_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("MCP_PORT")
     with pytest.raises(RuntimeError, match="MCP_PORT is missing.*config/mcp.env"):
         config.load()
+
+
+@pytest.mark.parametrize("url", ["https://barabot.example:8443", "https://barabot.example:443/"])
+def test_mcp_public_url_must_not_name_a_port(monkeypatch: pytest.MonkeyPatch, url: str) -> None:
+    config, _ = _import_config(monkeypatch)
+    _set_valid_environment(monkeypatch, "prod")
+    monkeypatch.setenv("MCP_PUBLIC_URL", url)
+    with pytest.raises(RuntimeError, match="MCP_PUBLIC_URL must not name a port.*443"):
+        config.load()
