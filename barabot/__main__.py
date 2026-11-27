@@ -64,6 +64,7 @@ from barabot.domains.processor.stats import StatsReporter
 from barabot.domains.scraper import JoinerService, ScraperService
 from barabot.domains.scraper.ingest import MessageIngest
 from barabot.domains.scraper.photos import PhotoDownloader
+from barabot.domains.scraper.service import make_client
 
 log = logging.getLogger("barabot")
 
@@ -139,10 +140,12 @@ def _build_services(
     bot: TelethonSender,
 ) -> list[Service]:
     """Construct all services. Add a new domain by adding one line here."""
-    scraper = ScraperService(cfg, MessageIngest(cfg.db_path, processor.schedule), photos)
+    # One Telegram user session for reading and joining. ScraperService connects it,
+    # so it comes first and stops last.
+    tg_client = make_client(cfg)
     services: list[Service] = [
-        scraper,
-        JoinerService(cfg.db_path, scraper),  # after the scraper: it joins on the scraper's client
+        ScraperService(cfg, tg_client, MessageIngest(cfg.db_path, processor.schedule), photos),
+        JoinerService(cfg.db_path, tg_client),
         BotService(cfg, bot),
         McpService(cfg.mcp, cfg.db_path, bot),
     ]

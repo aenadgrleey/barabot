@@ -4,9 +4,11 @@ Live NewMessage, MessageEdited and MessageDeleted events and the startup
 backfill all go through `MessageIngest`. Photos are downloaded before
 ingest, outside its lock, so processing can show them to Jev.
 
-The scraper reads WATCH_CHATS and every chat a subscription made it join.
-`JoinerService` joins new chats on this client and adds each one to the
-watch list through `watch`.
+The scraper reads WATCH_CHATS and every chat the `chats` table marks
+joined. It asks the database for each event, so a chat that `JoinerService`
+joins is read from its next message on, with no state shared between them.
+Both get the same Telegram client from `__main__`; the scraper connects and
+disconnects it.
 """
 
 from __future__ import annotations
@@ -32,30 +34,19 @@ log = logging.getLogger(__name__)
 
 
 class ScraperService:
-    def __init__(self, cfg: Config, ingest: MessageIngest, photos: PhotoDownloader | None = None) -> None:
+    def __init__(
+        self, cfg: Config, client: TelegramClient, ingest: MessageIngest, photos: PhotoDownloader | None = None
+    ) -> None:
         """Without a photo downloader, photos are stored as descriptors only."""
         self.cfg = cfg
+        self.client = client
         self._photos = photos
-        self.client: TelegramClient | None = None
         self._ingest = ingest
-        self._chats: set[int] = set(cfg.watch_chats)
+        self._config_chats = frozenset(cfg.watch_chats)
         self._backfill: asyncio.Task[None] | None = None
 
-    @property
-    def watched(self) -> set[int]:
-        """The live watch list. Read it; add through `watch`."""
-        return self._chats
-
-    def watch(self, chat_id: int) -> None:
-        self._chats.add(chat_id)
-
     async def start(self) -> None:
-        self.client = make_client(self.cfg)
         await connect_client(self.cfg, self.client)
-
-        self._chats |= await asyncio.to_thread(joined_chat_ids, self.cfg.db_path)
-        if not self._chats:
-            log.info("No chats to watch yet; the scraper joins them as subscriptions name them")
         # Chats are filtered in the handlers instead of events.NewMessage(chats=...):
         # deletes from basic groups carry no chat_id, and explicit filtering avoids
         # entity resolution through the gateway.
@@ -65,7 +56,6 @@ class ScraperService:
         self._backfill = asyncio.create_task(self._run_backfill(), name="scraper-backfill")
 
     async def run_forever(self, stop: asyncio.Event) -> None:
-        assert self.client is not None
         disconnected = self.client.disconnected
         async with asyncio.TaskGroup() as tasks:
             stopping = tasks.create_task(stop.wait())
@@ -80,19 +70,23 @@ class ScraperService:
             self._backfill.cancel()
             await asyncio.gather(self._backfill, return_exceptions=True)
             self._backfill = None
-        if self.client is not None:
+        if self.client.is_connected():
             await self.client.disconnect()  # pyright: ignore[reportGeneralTypeIssues]  # a coroutine inside a running loop
-            self.client = None
 
     async def _on_message(self, event: events.NewMessage.Event) -> None:
         seen = to_seen(event.message)
-        if seen is not None and seen.chat_id in self._chats:
+        if seen is not None and await self._watching(seen.chat_id):
             await self._ingest.save_message(await self._with_photo(event.message, seen))
 
     async def _on_deleted(self, event: events.MessageDeleted.Event) -> None:
-        if event.chat_id is not None and event.chat_id not in self._chats:
+        if event.chat_id is not None and not await self._watching(event.chat_id):
             return
         await self._ingest.mark_deleted(DeletedMessages(event.chat_id, list(event.deleted_ids)))
+
+    async def _watching(self, chat_id: int) -> bool:
+        if chat_id in self._config_chats:
+            return True
+        return await asyncio.to_thread(is_joined, self.cfg.db_path, chat_id)
 
     async def _with_photo(self, msg, seen: SeenMessage) -> SeenMessage:
         """Add the downloaded file to a photo descriptor; a failed download is not fatal."""
@@ -115,9 +109,11 @@ class ScraperService:
         Deletes that happened while the process was down are not seen:
         iter_messages simply does not return those messages.
         """
-        assert self.client is not None
+        chats = self._config_chats | await asyncio.to_thread(joined_chat_ids, self.cfg.db_path)
+        if not chats:
+            log.info("No chats to watch yet; the joiner joins them as subscriptions name them")
         since = datetime.now(UTC) - timedelta(hours=self.cfg.backfill_hours)
-        for chat_id in sorted(self._chats):
+        for chat_id in sorted(chats):
             count = 0
             try:
                 async for msg in self.client.iter_messages(chat_id):
@@ -135,12 +131,21 @@ class ScraperService:
             log.info("Backfilled %d message(s) from chat %s", count, chat_id)
 
 
-def joined_chat_ids(db_path: Path) -> set[int]:
-    """Chats joined before, to watch from the start."""
+def is_joined(db_path: Path, chat_id: int) -> bool:
+    conn = connect(db_path)
+    try:
+        row = conn.execute("SELECT 1 FROM chats WHERE chat_id = ? AND status = 'joined' LIMIT 1", (chat_id,)).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
+def joined_chat_ids(db_path: Path) -> frozenset[int]:
+    """Chats joined so far, for the backfill."""
     conn = connect(db_path)
     try:
         rows = conn.execute("SELECT chat_id FROM chats WHERE status = 'joined' AND chat_id IS NOT NULL")
-        return {row["chat_id"] for row in rows}
+        return frozenset(row["chat_id"] for row in rows)
     finally:
         conn.close()
 

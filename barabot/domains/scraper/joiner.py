@@ -2,9 +2,9 @@
 
 Saving a subscription only stores its chats as `pending` (see
 barabot/domains/bot/subscriptions.py). `JoinerService` runs `ChatJoiner`
-as its own service on the scraper's Telegram client: through tgmux, a
-join made by the barabot integration is also what assigns the chat to
-barabot. Each round
+as its own service on the scraper's Telegram client, which `__main__`
+hands to both: through tgmux, a join made by the barabot integration is
+also what assigns the chat to barabot. Each round
 it takes the chats that an active subscription points to and that are
 
     pending     not tried yet
@@ -12,9 +12,9 @@ it takes the chats that an active subscription points to and that are
     failed      tried again every FAILED_RETRY, in case the chat changed
 
 joins them one at a time and writes back the status, the chat ID and the
-title. A joined chat is handed to `on_joined`, which adds it to the
-scraper's watch list right away. The scraper starts before the joiner and
-stops after it, so the client is connected for the joiner's whole life.
+title. The database is the only link to the scraper: it reads every chat
+marked joined. The scraper connects the client, so it starts before the
+joiner and stops after it.
 
 A folder link (`t.me/addlist/<slug>`) is read once: its channels are
 joined like any other chat, each becomes a `chats` row whose `parent_id`
@@ -29,10 +29,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 from telethon import errors, functions, types, utils
 
@@ -115,13 +114,10 @@ def _reason(exc: errors.RPCError) -> str:
     return exc.message or type(exc).__name__
 
 
-async def join(client: Any, ref: ChatRef, watched: Collection[int]) -> Outcome:
+async def join(client: Any, ref: ChatRef) -> Outcome:
     """Join one chat on the scraper's client. FloodWaitError and unknown errors propagate."""
     try:
         match ref:
-            case ChatId(chat_id) if chat_id in watched:
-                # Already read through WATCH_CHATS; no need to ask Telegram.
-                return Outcome(ChatStatus.JOINED, chat_id)
             case ChatId(chat_id):
                 try:
                     entity = await client.get_entity(chat_id)
@@ -167,16 +163,12 @@ class ChatJoiner:
         self,
         db_path: Path,
         client: Any,
-        watched: Collection[int],
-        on_joined: Callable[[int], None],
         *,
         pause: float = JOIN_PAUSE,
         interval: float = ROUND_INTERVAL,
     ) -> None:
         self._db_path = db_path
         self._client = client
-        self._watched = watched  # the scraper's live watch list; read only here
-        self._on_joined = on_joined
         self._pause = pause
         self._interval = interval
 
@@ -204,11 +196,10 @@ class ChatJoiner:
             if isinstance(chat.ref, ChatList):
                 await self._expand(chat.id, chat.ref)
                 continue
-            outcome = await join(self._client, chat.ref, self._watched)
+            outcome = await join(self._client, chat.ref)
             await asyncio.to_thread(self._save, chat.id, outcome)
             if outcome.status is ChatStatus.JOINED and outcome.chat_id is not None:
                 log.info("Joined %s (%s) as chat %s", chat.ref, outcome.title or "?", outcome.chat_id)
-                self._on_joined(outcome.chat_id)
             elif outcome.status is ChatStatus.REQUESTED:
                 log.info("Asked to join %s; waiting for an admin", chat.ref)
             else:
@@ -246,7 +237,6 @@ class ChatJoiner:
         joined = await asyncio.to_thread(self._save_expansion, row_id, title, children)
         for chat_id in joined:
             log.info("Joined chat %s from folder %s", chat_id, ref)
-            self._on_joined(chat_id)
 
     async def _join_channel(self, channel: types.Channel) -> Outcome:
         """Join one channel extracted from a folder. FloodWait and unknown errors propagate."""
@@ -341,30 +331,15 @@ class ChatJoiner:
         return joined
 
 
-class Watcher(Protocol):
-    """What the joiner needs from the scraper, once the scraper has started."""
-
-    @property
-    def client(self) -> Any: ...
-
-    @property
-    def watched(self) -> Collection[int]: ...
-
-    def watch(self, chat_id: int) -> None: ...
-
-
 class JoinerService:
     """`ChatJoiner` as a service: rounds run in a task from start() until stop()."""
 
-    def __init__(self, db_path: Path, scraper: Watcher) -> None:
-        self._db_path = db_path
-        self._scraper = scraper
+    def __init__(self, db_path: Path, client: Any) -> None:
+        self._joiner = ChatJoiner(db_path, client)
         self._task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
-        assert self._scraper.client is not None, "the scraper starts first"
-        joiner = ChatJoiner(self._db_path, self._scraper.client, self._scraper.watched, self._scraper.watch)
-        self._task = asyncio.create_task(joiner.run_forever(), name="joiner")
+        self._task = asyncio.create_task(self._joiner.run_forever(), name="joiner")
 
     async def run_forever(self, stop: asyncio.Event) -> None:
         assert self._task is not None, "start() runs first"

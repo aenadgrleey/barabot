@@ -92,17 +92,11 @@ def chats(db):
         conn.close()
 
 
-def run(db, client, watched=()):
-    watched = set(watched)
-    joined = []
-
-    def on_joined(chat_id):
-        watched.add(chat_id)
-        joined.append(chat_id)
-
-    joiner = ChatJoiner(db, client, watched, on_joined, pause=0)
+def run(db, client):
+    """One round; returns how many chats it tried and every chat the database now marks joined."""
+    joiner = ChatJoiner(db, client, pause=0)
     tried = asyncio.run(joiner.run_once())
-    return tried, joined
+    return tried, sorted(joined_chat_ids(db))
 
 
 def test_joins_every_kind_of_chat_and_watches_it(db):
@@ -114,7 +108,8 @@ def test_joins_every_kind_of_chat_and_watches_it(db):
         chats=["@flats", "https://t.me/+abc", "-1000000000333", "-1000000000444"],
     )
     client = FakeClient()
-    tried, joined = run(db, client, watched=[-1000000000444])
+    client.ids[-1000000000444] = channel(444, "Watched", megagroup=True)  # a member already, via WATCH_CHATS
+    tried, joined = run(db, client)
 
     assert tried == 4
     assert sorted(joined) == [-1000000000444, -1000000000333, -1000000000222, -1000000000111]
@@ -122,8 +117,8 @@ def test_joins_every_kind_of_chat_and_watches_it(db):
         "username:flats": ("joined", -1000000000111, "Flats"),
         "invite:abc": ("joined", -1000000000222, "Private"),
         "id:-1000000000333": ("joined", -1000000000333, "Old"),
-        # In WATCH_CHATS already: no request to Telegram.
-        "id:-1000000000444": ("joined", -1000000000444, None),
+        # A member already: looked up, not joined again.
+        "id:-1000000000444": ("joined", -1000000000444, "Watched"),
     }
     assert {type(r).__name__ for r in client.requests} == {"JoinChannelRequest", "ImportChatInviteRequest"}
 
@@ -279,23 +274,13 @@ def test_folder_without_channels_fails(db, caplog):
     assert run(db, client)[0] == 0
 
 
-def test_service_joins_on_the_scrapers_client_until_stopped(db):
+def test_service_joins_until_stopped(db):
     subscriptions.add(db, user_id=USER, author="a", query="q", chats=["@flats"])
-
-    class Scraper:
-        def __init__(self):
-            self.client = FakeClient()
-            self.watched = set()
-
-        def watch(self, chat_id):
-            self.watched.add(chat_id)
-
-    scraper = Scraper()
-    joiner = JoinerService(db, scraper)
+    joiner = JoinerService(db, FakeClient())
 
     async def scenario():
         await joiner.start()
-        while not scraper.watched:
+        while not joined_chat_ids(db):
             await asyncio.sleep(0.01)
         stop = asyncio.Event()
         stop.set()
@@ -303,5 +288,4 @@ def test_service_joins_on_the_scrapers_client_until_stopped(db):
         await joiner.stop()
 
     asyncio.run(asyncio.wait_for(scenario(), 5))
-    assert scraper.watched == {-1000000000111}
     assert chats(db)["username:flats"][0] == ChatStatus.JOINED
