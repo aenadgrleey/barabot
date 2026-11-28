@@ -61,16 +61,19 @@
   .hero h1 { margin: 0 0 6px; font-size: 22px; line-height: 1.2; font-weight: 600; letter-spacing: -0.2px; }
   .hero p { margin: 0; max-width: 280px; font-size: 15px; line-height: 1.33; color: var(--hint); }
   .hero.quiet .hero-icon { color: var(--hint); background: var(--section); }
-  /* A collapsing hero: collapse() moves the title into the top bar as the page scrolls. */
-  .hero.collapsing .hero-icon, .hero.collapsing p { will-change: transform, opacity; }
-  .hero.collapsing h1 { position: relative; z-index: 11; transform-origin: 50% 0; will-change: transform;
-                        white-space: nowrap; }
+  /* A collapsing hero: its box goes away so the title can stick to the top bar for the whole page.
+     The browser keeps the title in place while scrolling; collapse() only scales and fades. */
+  .hero.collapsing { display: contents; }
+  .hero.collapsing .hero-icon { margin: 8px auto 12px; will-change: transform, opacity; }
+  .hero.collapsing h1 { position: sticky; z-index: 11; margin: 0 12px 6px; text-align: center; white-space: nowrap;
+                        transform-origin: 50% 0; will-change: transform; }
+  .hero.collapsing p { margin: 0 auto 20px; padding: 0 12px; text-align: center; will-change: opacity; }
   .topbar { position: fixed; z-index: 10; top: 0; left: 0; right: 0; height: calc(var(--safe-top) + var(--topbar));
-            opacity: 0; pointer-events: none;
-            background: color-mix(in srgb, var(--page) 88%, transparent);
-            -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); }
-  .topbar::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0;
-                   border-bottom: 0.5px solid var(--separator); opacity: var(--line, 0); }
+            opacity: 0; pointer-events: none; }
+  .topbar::before { content: ""; position: absolute; inset: 0 0 -28px 0;
+                    background: linear-gradient(to bottom, var(--page) calc(100% - 28px),
+                                                color-mix(in srgb, var(--page) 60%, transparent) calc(100% - 16px),
+                                                transparent); }
 
   /* The add button floats over the list; the list fades out under it. */
   .bottombar { position: fixed; z-index: 10; left: 0; right: 0; bottom: 0;
@@ -132,6 +135,10 @@
             background: linear-gradient(180deg, var(--a1), var(--a2)); }
   .avatar svg { width: 22px; height: 22px; }
   .avatar.folder { background: color-mix(in srgb, var(--hint) 60%, transparent); }
+  .avatar { position: relative; overflow: hidden; }
+  .avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+                opacity: 0; transition: opacity 0.2s; }
+  .avatar img.loaded { opacity: 1; }
 
   /* Bot blocked */
   .alert .row { align-items: flex-start; padding-top: 12px; padding-bottom: 12px; }
@@ -232,15 +239,32 @@ function isId(chat) {
   return /^-?\d+$/.test(chat);
 }
 
+// The joiner looks the username up; until then a chat added as @name already has one.
 function username(chat) {
+  if (chat.username) return "@" + chat.username;
   return chat.chat.startsWith("@") ? chat.chat : null;
 }
 
 // Title first, then @username; "https://t.me/+AbCdEf" becomes "t.me/+AbCdEf".
 function chatName(chat) {
   if (chat.title) return chat.title;
+  if (username(chat)) return username(chat);
   if (isId(chat.chat)) return "Unnamed chat";
   return chat.chat.replace(/^https?:\/\//i, "");
+}
+
+// Photos need the initData header, so an <img> cannot fetch them itself. One fetch per photo,
+// shared by every row that shows the same chat.
+const photos = new Map();
+
+function photoUrl(path) {
+  if (!photos.has(path)) {
+    photos.set(path, fetch(path, { headers: { Authorization: "tma " + tg.initData } })
+      .then((response) => (response.ok ? response.blob() : null))
+      .then((blob) => (blob ? URL.createObjectURL(blob) : null))
+      .catch(() => null));
+  }
+  return photos.get(path);
 }
 
 function avatar(chat) {
@@ -251,10 +275,19 @@ function avatar(chat) {
   node.style.setProperty("--a1", a1);
   node.style.setProperty("--a2", a2);
   if (chat.status === "expanded") node.append(icon("folder"));
-  else if (!chat.title && isLink(chat.chat)) node.append(icon("link"));
+  else if (!chat.title && !chat.username && isLink(chat.chat)) node.append(icon("link"));
   else {
-    const letter = (chat.title || (isId(chat.chat) ? "" : chat.chat)).match(/[\p{L}\p{N}]/u);
+    const letter = (chat.title || username(chat) || (isId(chat.chat) ? "" : chat.chat)).match(/[\p{L}\p{N}]/u);
     node.textContent = letter ? letter[0] : "#";
+  }
+  // The letter stays underneath until the photo arrives, then the photo fades in over it.
+  if (chat.photo && tg) {
+    photoUrl(chat.photo).then((url) => {
+      if (!url) return;
+      const img = el("img", { alt: "", src: url });
+      img.addEventListener("load", () => img.classList.add("loaded"));
+      node.append(img);
+    });
   }
   return node;
 }
@@ -352,9 +385,10 @@ function render(data) {
   collapse(top);
 }
 
-// Like a Telegram profile: the icon shrinks and fades as it scrolls away, the title rises into the top bar
-// and stops there at the size of a bar title. Positions are measured once per layout; scrolling only
-// sets transforms.
+// Like a Telegram profile: the icon shrinks and fades as it scrolls away, the title rises with the page,
+// sticks in the top bar and shrinks to a bar title on the way. The title's position is left to
+// position: sticky, because a scroll handler runs a frame behind the scroll and makes it jitter.
+// The handler only sets scale and opacity from positions measured once per layout.
 function collapse(heroNode) {
   heroNode.classList.add("collapsing");
   const heroIcon = heroNode.querySelector(".hero-icon");
@@ -365,19 +399,20 @@ function collapse(heroNode) {
   let m = null;
 
   function measure() {
-    for (const node of [heroIcon, title, text]) { node.style.transform = ""; node.style.opacity = ""; }
     const y = window.scrollY;
     const top = (node) => node.getBoundingClientRect().top + y;
-    const barHeight = bar.offsetHeight;
+    title.style.position = "static";
+    const titleTop = top(title);
+    title.style.position = "";
     const rowHeight = parseFloat(getComputedStyle(bar).getPropertyValue("--topbar")) || 44;
     const compactScale = 17 / parseFloat(getComputedStyle(title).fontSize);
-    const compactTop = barHeight - rowHeight + (rowHeight - title.offsetHeight * compactScale) / 2;
+    const stickyTop = bar.offsetHeight - rowHeight + (rowHeight - title.offsetHeight * compactScale) / 2;
+    title.style.top = stickyTop + "px";
     m = {
-      barHeight, compactScale,
+      compactScale,
       iconEnd: top(heroIcon) + heroIcon.offsetHeight * 0.8,
-      textEnd: Math.max(1, top(text) - compactTop),
-      titleDistance: Math.max(1, top(title) - compactTop),
-      heroBottom: top(heroNode) + heroNode.offsetHeight,
+      textEnd: Math.max(1, top(text) - stickyTop),
+      titleDistance: Math.max(1, titleTop - stickyTop),
     };
     update();
   }
@@ -389,13 +424,10 @@ function collapse(heroNode) {
     heroIcon.style.transform = "scale(" + (1 - fade) + ")";
     heroIcon.style.opacity = 1 - fade;
     text.style.opacity = 1 - clamp(y / m.textEnd);
-    const t = clamp(y / m.titleDistance);
-    const progress = t * t * (3 - 2 * t);
-    const scale = 1 + (m.compactScale - 1) * progress;
-    title.style.transform = "translateY(" + (y - progress * m.titleDistance) + "px) scale(" + scale + ")";
+    const progress = clamp(y / m.titleDistance);
+    title.style.transform = "scale(" + (1 + (m.compactScale - 1) * progress) + ")";
     title.style.cursor = progress > 0.5 ? "pointer" : "";
     bar.style.opacity = progress;
-    bar.style.setProperty("--line", clamp((y - (m.heroBottom - m.barHeight)) / 12));
   }
 
   let queued = false;
