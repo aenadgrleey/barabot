@@ -12,8 +12,11 @@ it takes the chats that an active subscription points to and that are
     failed      tried again every FAILED_RETRY, in case the chat changed
 
 joins them one at a time and writes back the status, the chat ID and the
-title. A joined chat without a title, which older code left behind, gets
-its title looked up; that is tried again every FAILED_RETRY. The database is the only link to the scraper: it reads every chat
+title. Then every joined chat whose details were never looked up, or not
+for DETAILS_REFRESH, gets its title, @username and small photo from
+Telegram; the photo goes to the chat photos directory, where the Mini App
+reads it. A new column with no details_at is how all chats get them once.
+The database is the only link to the scraper: it reads every chat
 marked joined. The scraper connects the client, so it starts before the
 joiner and stops after it.
 
@@ -46,6 +49,7 @@ JOIN_PAUSE = 10.0  # seconds between two joins
 MAX_LIST_CHATS = 50  # channels taken from one folder link
 REQUESTED_RETRY = "-15 minutes"  # SQLite datetime modifiers
 FAILED_RETRY = "-1 day"
+DETAILS_REFRESH = "-7 days"
 
 # Telegram's answers that mean this reference will not get us into a chat.
 _GONE = (
@@ -93,6 +97,25 @@ class Child:
 
 def _joined(entity: Any) -> Outcome:
     return Outcome(ChatStatus.JOINED, utils.get_peer_id(entity), getattr(entity, "title", None))
+
+
+@dataclass(frozen=True)
+class Details:
+    """What a joined chat looks like in Telegram now."""
+
+    title: str | None
+    username: str | None  # without @, as Telegram spells it
+    photo: str | None  # file name in the chat photos directory
+
+
+def _username(entity: Any) -> str | None:
+    if getattr(entity, "username", None):
+        return entity.username
+    # Chats with collectible usernames list them here instead.
+    for name in getattr(entity, "usernames", None) or []:
+        if name.active:
+            return name.username
+    return None
 
 
 def _child(channel: types.Channel, outcome: Outcome) -> Child:
@@ -164,12 +187,14 @@ class ChatJoiner:
         self,
         db_path: Path,
         client: Any,
+        photos_dir: Path,
         *,
         pause: float = JOIN_PAUSE,
         interval: float = ROUND_INTERVAL,
     ) -> None:
         self._db_path = db_path
         self._client = client
+        self._photos_dir = photos_dir
         self._pause = pause
         self._interval = interval
 
@@ -189,7 +214,7 @@ class ChatJoiner:
             await asyncio.sleep(delay)
 
     async def run_once(self) -> int:
-        """Try every due chat once, then look up missing titles; return how many chats were tried."""
+        """Try every due chat once, then look up stale details; return how many chats were tried."""
         due = await asyncio.to_thread(self._due)
         for n, chat in enumerate(due):
             if n:
@@ -205,24 +230,47 @@ class ChatJoiner:
                 log.info("Asked to join %s; waiting for an admin", chat.ref)
             else:
                 log.warning("Cannot join %s: %s", chat.ref, outcome.reason)
-        untitled = await asyncio.to_thread(self._untitled)
-        for n, (row_id, chat_id) in enumerate(untitled):
+        stale = await asyncio.to_thread(self._stale)
+        for n, (row_id, chat_id) in enumerate(stale):
             if n or due:
                 await asyncio.sleep(self._pause)
-            await self._fill_title(row_id, chat_id)
-        return len(due) + len(untitled)
+            await self._fill_details(row_id, chat_id)
+        return len(due) + len(stale)
 
-    async def _fill_title(self, row_id: int, chat_id: int) -> None:
-        """Look up the title of a joined chat. A failed lookup keeps the chat joined: the scraper reads it."""
+    async def _fill_details(self, row_id: int, chat_id: int) -> None:
+        """Look up a joined chat. A failed lookup keeps the chat joined, since the scraper reads it, and waits."""
         try:
             entity = await self._client.get_entity(chat_id)
-            title = getattr(entity, "title", None)
         except (ValueError, *_GONE) as exc:
-            title = None
-            log.warning("Cannot look up the title of chat %s: %s", chat_id, type(exc).__name__)
-        await asyncio.to_thread(self._save_title, row_id, title)
-        if title:
-            log.info("Chat %s is %s", chat_id, title)
+            log.warning("Cannot look up chat %s: %s", chat_id, type(exc).__name__)
+            await asyncio.to_thread(self._save_details, row_id, None)
+            return
+        details = Details(getattr(entity, "title", None), _username(entity), await self._photo(entity))
+        await asyncio.to_thread(self._save_details, row_id, details)
+        log.info("Chat %s is %s (@%s)", chat_id, details.title or "?", details.username or "-")
+
+    async def _photo(self, entity: Any) -> str | None:
+        """Download the chat's small photo once per photo; its file name, or None without one."""
+        photo = getattr(entity, "photo", None)
+        if not isinstance(photo, types.ChatPhoto):
+            return None
+        name = f"{photo.photo_id}.jpg"
+        path = self._photos_dir / name
+        if path.exists():
+            return name
+        self._photos_dir.mkdir(parents=True, exist_ok=True)
+        part = self._photos_dir / f"{name}.part"
+        try:
+            saved = await self._client.download_profile_photo(entity, file=str(part), download_big=False)
+        except errors.FloodWaitError:
+            raise
+        except errors.RPCError as exc:
+            log.warning("Cannot download the photo of chat %s: %s", utils.get_peer_id(entity), type(exc).__name__)
+            return None
+        if not saved:
+            return None
+        Path(saved).replace(path)
+        return name
 
     async def _expand(self, row_id: int, ref: ChatList) -> None:
         """Read a folder once, join its channels, and write them in one transaction."""
@@ -301,30 +349,36 @@ class ChatJoiner:
         finally:
             conn.close()
 
-    def _untitled(self) -> list[tuple[int, int]]:
-        """Joined chats of active subscriptions that have a chat ID but no title, as (row ID, chat ID)."""
+    def _stale(self) -> list[tuple[int, int]]:
+        """Joined chats of active subscriptions due a details lookup, never looked up first, as (row ID, chat ID)."""
         conn = connect(self._db_path)
         try:
             rows = conn.execute(
                 "SELECT c.id, c.chat_id FROM chats c "
                 "WHERE EXISTS (SELECT 1 FROM subscription_chats sc JOIN subscriptions s ON s.id = sc.subscription_id "
                 "              WHERE sc.chat = c.id AND s.active = 1) "
-                "AND c.status = 'joined' AND c.title IS NULL AND c.chat_id IS NOT NULL "
-                "AND c.updated_at <= datetime('now', ?) ORDER BY c.id",
-                (FAILED_RETRY,),
+                "AND c.status = 'joined' AND c.chat_id IS NOT NULL "
+                "AND (c.details_at IS NULL OR c.details_at <= datetime('now', ?)) "
+                "ORDER BY c.details_at IS NOT NULL, c.details_at, c.id",
+                (DETAILS_REFRESH,),
             ).fetchall()
             return [(row["id"], row["chat_id"]) for row in rows]
         finally:
             conn.close()
 
-    def _save_title(self, row_id: int, title: str | None) -> None:
+    def _save_details(self, row_id: int, details: Details | None) -> None:
+        """Write what the lookup found; None, a failed lookup, only marks the attempt."""
         conn = connect(self._db_path)
         try:
             with transaction(conn):
-                conn.execute(
-                    "UPDATE chats SET title = COALESCE(?, title), updated_at = datetime('now') WHERE id = ?",
-                    (title, row_id),
-                )
+                if details is None:
+                    conn.execute("UPDATE chats SET details_at = datetime('now') WHERE id = ?", (row_id,))
+                else:
+                    conn.execute(
+                        "UPDATE chats SET title = COALESCE(?, title), username = ?, photo = ?, "
+                        "details_at = datetime('now') WHERE id = ?",
+                        (details.title, details.username, details.photo, row_id),
+                    )
         finally:
             conn.close()
 
@@ -395,8 +449,8 @@ class ChatJoiner:
 class JoinerService:
     """`ChatJoiner` as a service: rounds run in a task from start() until stop()."""
 
-    def __init__(self, db_path: Path, client: Any) -> None:
-        self._joiner = ChatJoiner(db_path, client)
+    def __init__(self, db_path: Path, client: Any, photos_dir: Path) -> None:
+        self._joiner = ChatJoiner(db_path, client, photos_dir)
         self._task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:

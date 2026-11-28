@@ -132,7 +132,7 @@
   <tr><th>Component</th><th>Kind</th><th>Owns</th></tr>
   <tr><td><code>ScraperService</code></td><td>Service</td><td>Telegram user connection via tgmux or Telethon, event handlers, startup backfill</td></tr>
   <tr><td><code>BotService</code></td><td>Service</td><td>Bot API connection, message router, command and agent modes, subscription functions</td></tr>
-  <tr><td><code>JoinerService</code></td><td>Service</td><td>Joins the chats that subscriptions name, on the same Telegram client as the scraper, and marks them joined in <code>chats</code></td></tr>
+  <tr><td><code>JoinerService</code></td><td>Service</td><td>Joins the chats that subscriptions name, on the same Telegram client as the scraper, and marks them joined in <code>chats</code>; keeps each joined chat's title, @username and small photo (<code>media/chat-photos</code>, for the Mini App) up to date weekly</td></tr>
   <tr><td><code>WebService</code></td><td>Service</td><td>The one HTTP server behind <code>PUBLIC_URL</code>. Mounts the Mini App app under <code>/app</code> and the MCP connector app at the root; knows nothing about either</td></tr>
   <tr><td>DBOS</td><td>Infrastructure</td><td>Workflow state in its own SQLite database at <code>data/dbos.sqlite</code>. We use SQLite in production too because load is small.</td></tr>
   <tr><td>Processing</td><td>DBOS workflows and steps</td><td>Listing assembly, subscription matching, and notification routing</td></tr>

@@ -8,7 +8,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from barabot.api import BarabotApi
-from barabot.core.db import migrate
+from barabot.core.db import connect, migrate
 from barabot.core.web import compose
 from barabot.domains.bot import reach, subscriptions
 from barabot.domains.mcp import server as mcp
@@ -63,7 +63,7 @@ def client(db):
     async def bot_link() -> str:
         return "https://t.me/barabot_test_bot"
 
-    app = build_app(BarabotApi(db), db, TOKEN, bot_link)
+    app = build_app(BarabotApi(db), db, db.parent / "photos", TOKEN, bot_link)
     with TestClient(app, base_url=PUBLIC) as test_client:
         yield test_client
 
@@ -84,9 +84,40 @@ def test_lists_only_the_users_own_subscriptions(client, db):
     assert response.status_code == 200
     body = response.json()
     assert [s["query"] for s in body["subscriptions"]] == ["2 комнаты"]
-    assert body["subscriptions"][0]["chats"] == [{"chat": "@flats", "title": None, "status": "pending", "folder": None}]
+    assert body["subscriptions"][0]["chats"] == [
+        {"chat": "@flats", "title": None, "username": None, "photo": None, "status": "pending", "folder": None}
+    ]
     assert body["notifications_blocked"] is False
     assert body["bot_link"] == "https://t.me/barabot_test_bot"
+
+
+def _give_photo(db, value, name):
+    (db.parent / "photos").mkdir(exist_ok=True)
+    (db.parent / "photos" / name).write_bytes(b"jpeg")
+    conn = connect(db)
+    conn.execute("UPDATE chats SET username = 'Flats', photo = ? WHERE value = ?", (name, value))
+    conn.commit()
+    conn.close()
+
+
+def test_chat_photos_are_served_only_to_users_who_watch_the_chat(client, db):
+    subscriptions.add(db, user_id=USER_ID, author="a", query="q", chats=["@flats"])
+    subscriptions.add(db, user_id=999, author="b", query="q", chats=["@bikes"])
+    _give_photo(db, "flats", "11.jpg")
+    _give_photo(db, "bikes", "22.jpg")
+    auth = {"Authorization": "tma " + make_init_data()}
+
+    chat = client.get("/api/subscriptions", headers=auth).json()["subscriptions"][0]["chats"][0]
+    assert (chat["username"], chat["photo"]) == ("Flats", "api/photos/11.jpg")
+
+    response = client.get("/api/photos/11.jpg", headers=auth)
+    assert response.status_code == 200
+    assert response.content == b"jpeg"
+    assert response.headers["content-type"] == "image/jpeg"
+    assert client.get("/api/photos/11.jpg").status_code == 401
+    assert client.get("/api/photos/22.jpg", headers=auth).status_code == 404  # someone else's chat
+    assert client.get("/api/photos/33.jpg", headers=auth).status_code == 404
+    assert client.get("/api/photos/..%2Fbarabot.sqlite", headers=auth).status_code == 404
 
 
 def test_reports_when_the_bot_cannot_write(client, db):
@@ -121,7 +152,7 @@ def test_served_under_app_next_to_the_mcp_connector(db):
     login = TelegramLogin("777000", "secret", PUBLIC + mcp.CALLBACK_PATH)
     app = compose(
         [
-            (PATH, build_app(BarabotApi(db), db, TOKEN, Bot().link)),
+            (PATH, build_app(BarabotApi(db), db, db.parent / "photos", TOKEN, Bot().link)),
             ("", mcp.build_app(db, login, Bot(), PUBLIC, port=8765)),
         ]
     )

@@ -1,8 +1,9 @@
 import asyncio
 import logging
+from pathlib import Path
 
 import pytest
-from telethon import errors, functions, types
+from telethon import errors, functions, types, utils
 
 from barabot.core.chats import ChatStatus
 from barabot.core.db import connect, migrate
@@ -13,8 +14,9 @@ from barabot.domains.scraper.service import joined_chat_ids
 USER = 4242
 
 
-def channel(id_, title, **flags):
-    return types.Channel(id=id_, title=title, photo=types.ChatPhotoEmpty(), date=None, access_hash=1, **flags)
+def channel(id_, title, photo=None, **flags):
+    photo = types.ChatPhoto(photo_id=photo, dc_id=2) if photo else types.ChatPhotoEmpty()
+    return types.Channel(id=id_, title=title, photo=photo, date=None, access_hash=1, **flags)
 
 
 def folder(title, *chats):
@@ -37,15 +39,24 @@ class FakeClient:
         self.approval_needed = set()
         self.flood = False
         self.requests = []
+        self.downloads = []
 
     async def get_entity(self, target):
         if isinstance(target, int):
-            if target not in self.ids:
+            known = {utils.get_peer_id(c): c for c in [*self.usernames.values(), *self.invites.values()]}
+            known.update(self.ids)
+            if target not in known:
                 raise ValueError("Could not find the input entity")
-            return self.ids[target]
+            return known[target]
         if target not in self.usernames:
             raise ValueError(f'No user has "{target}" as username')
         return self.usernames[target]
+
+    async def download_profile_photo(self, entity, file, download_big=True):
+        assert not download_big
+        self.downloads.append(entity.photo.photo_id)
+        Path(file).write_bytes(b"jpeg")
+        return file
 
     async def __call__(self, request):
         self.requests.append(request)
@@ -97,7 +108,7 @@ def chats(db):
 
 def run(db, client):
     """One round; returns how many chats it tried and every chat the database now marks joined."""
-    joiner = ChatJoiner(db, client, pause=0)
+    joiner = ChatJoiner(db, client, db.parent / "photos", pause=0)
     tried = asyncio.run(joiner.run_once())
     return tried, sorted(joined_chat_ids(db))
 
@@ -114,7 +125,7 @@ def test_joins_every_kind_of_chat_and_watches_it(db):
     client.ids[-1000000000444] = channel(444, "Watched", megagroup=True)  # a member already, via WATCH_CHATS
     tried, joined = run(db, client)
 
-    assert tried == 4
+    assert tried == 8  # four joins, then four details lookups
     assert sorted(joined) == [-1000000000444, -1000000000333, -1000000000222, -1000000000111]
     assert chats(db) == {
         "username:flats": ("joined", -1000000000111, "Flats"),
@@ -208,7 +219,7 @@ def test_folder_link_expands_into_its_channels_once(db):
     )
     tried, joined = run(db, client)
 
-    assert tried == 1
+    assert tried == 3  # the folder, then a details lookup for each joined channel
     assert sorted(joined) == [-1000000000444, -1000000000111]
     conn = connect(db)
     parent = conn.execute("SELECT id, status, title FROM chats WHERE kind = 'list'").fetchone()
@@ -295,7 +306,7 @@ def test_folder_without_channels_fails(db, caplog):
 
 def test_service_joins_until_stopped(db):
     subscriptions.add(db, user_id=USER, author="a", query="q", chats=["@flats"])
-    joiner = JoinerService(db, FakeClient())
+    joiner = JoinerService(db, FakeClient(), db.parent / "photos")
 
     async def scenario():
         await joiner.start()
@@ -323,7 +334,7 @@ def _mark_joined_without_title(db, value, days_ago):
         conn.close()
 
 
-def test_joined_chat_without_title_gets_its_title(db):
+def test_joined_chat_without_details_gets_them_looked_up(db):
     # Older code marked WATCH_CHATS joined without asking Telegram, so they had no title.
     subscriptions.add(db, user_id=USER, author="a", query="q", chats=["-1000000000333"])
     _mark_joined_without_title(db, "-1000000000333", days_ago=3)
@@ -338,14 +349,62 @@ def test_joined_chat_without_title_gets_its_title(db):
     assert run(db, client)[0] == 0
 
 
-def test_failed_title_lookup_keeps_the_chat_joined_and_waits(db):
+def test_failed_details_lookup_keeps_the_chat_joined_and_waits(db):
     subscriptions.add(db, user_id=USER, author="a", query="q", chats=["-1000000000555"])
     _mark_joined_without_title(db, "-1000000000555", days_ago=3)
     client = FakeClient()  # does not know chat 555
 
     assert run(db, client) == (1, [-1000000000555])
     assert chats(db)["id:-1000000000555"] == ("joined", -1000000000555, None)
-    assert run(db, client)[0] == 0  # not asked again for a day
+    assert run(db, client)[0] == 0  # not asked again for DETAILS_REFRESH
+
+
+def details(db, value):
+    conn = connect(db)
+    try:
+        row = conn.execute("SELECT username, photo FROM chats WHERE value = ?", (value,)).fetchone()
+        return row["username"], row["photo"]
+    finally:
+        conn.close()
+
+
+def test_details_bring_the_username_and_the_photo(db):
+    subscriptions.add(db, user_id=USER, author="a", query="q", chats=["https://t.me/+abc", "-1000000000333"])
+    client = FakeClient()
+    client.invites["abc"] = channel(222, "Private", photo=9001, megagroup=True, username="Private_Flats")
+    # Collectible usernames come as a list; the active one is shown.
+    client.ids[-1000000000333] = channel(
+        333,
+        "Old",
+        megagroup=True,
+        usernames=[types.Username("gone", active=False), types.Username("old_flats", active=True)],
+    )
+
+    run(db, client)
+
+    assert details(db, "abc") == ("Private_Flats", "9001.jpg")
+    assert details(db, "-1000000000333") == ("old_flats", None)
+    assert (db.parent / "photos" / "9001.jpg").read_bytes() == b"jpeg"
+    assert not list((db.parent / "photos").glob("*.part"))
+
+
+def test_details_are_refreshed_and_a_photo_is_downloaded_once(db):
+    subscriptions.add(db, user_id=USER, author="a", query="q", chats=["@flats"])
+    client = FakeClient()
+    client.usernames["flats"] = channel(111, "Flats", photo=7, megagroup=True, username="flats")
+    run(db, client)
+    assert client.downloads == [7]
+
+    conn = connect(db)
+    conn.execute("UPDATE chats SET details_at = datetime('now', '-8 days')")
+    conn.commit()
+    conn.close()
+    client.usernames["flats"] = channel(111, "Flats renamed", photo=7, megagroup=True)
+
+    assert run(db, client)[0] == 1
+    assert chats(db)["username:flats"] == ("joined", -1000000000111, "Flats renamed")
+    assert details(db, "flats") == (None, "7.jpg")
+    assert client.downloads == [7]  # the same photo is not fetched again
 
 
 def test_adding_a_folder_later_links_the_chats_already_watched(db):

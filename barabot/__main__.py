@@ -150,15 +150,19 @@ def _build_services(
     # One Telegram user session for reading and joining. ScraperService connects it,
     # so it comes first and stops last.
     tg_client = make_client(cfg)
+    chat_photos = cfg.media_dir / "chat-photos"  # the joiner writes them, the Mini App serves them
     services: list[Service] = [
         ScraperService(cfg, tg_client, MessageIngest(cfg.db_path, processor.schedule), photos),
-        JoinerService(cfg.db_path, tg_client),
+        JoinerService(cfg.db_path, tg_client, chat_photos),
         BotService(cfg, bot, menu_url=miniapp.page_url(cfg.web.public_url)),
         # Each domain builds its own app; the web server only puts them under one URL.
         WebService(
             cfg.web,
             [
-                (miniapp.PATH, miniapp.build_app(BarabotApi(cfg.db_path), cfg.db_path, _bot_token(cfg), bot.link)),
+                (
+                    miniapp.PATH,
+                    miniapp.build_app(BarabotApi(cfg.db_path), cfg.db_path, chat_photos, _bot_token(cfg), bot.link),
+                ),
                 ("", build_connector(cfg, cfg.db_path, bot)),  # the root: OAuth metadata lives in /.well-known
             ],
         ),

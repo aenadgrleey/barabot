@@ -45,6 +45,10 @@ CREATE TABLE IF NOT EXISTS chats (
     value      TEXT    NOT NULL,
     chat_id    INTEGER,
     title      TEXT,
+    username   TEXT,  -- the chat's public @username as Telegram spells it, without @
+    photo      TEXT,  -- file name of the small chat photo in the chat photos directory
+    -- when the joiner last looked up title, username and photo; NULL: never
+    details_at TEXT,
     -- the folder row a chat was extracted from; NULL for an ordinary chat
     parent_id  INTEGER REFERENCES chats (id),
     status     TEXT    NOT NULL DEFAULT 'pending'
@@ -215,6 +219,7 @@ _ADDED_COLUMNS = {
     "listings": {"decided_version": "INTEGER NOT NULL DEFAULT 0"},
     "matches": {"p_fits": "REAL NOT NULL DEFAULT 0", "subscription_revision": "INTEGER NOT NULL DEFAULT 1"},
     "subscriptions": {"revision": "INTEGER NOT NULL DEFAULT 1"},
+    "chats": {"username": "TEXT", "photo": "TEXT", "details_at": "TEXT"},
 }
 
 

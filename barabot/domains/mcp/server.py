@@ -156,6 +156,7 @@ def subscription_view(row: SubscriptionRow) -> dict[str, Any]:
             {
                 "chat": str(chat.ref),
                 "title": chat.title,
+                "username": chat.username,
                 "status": chat.status.value,
                 "folder": str(chat.folder) if chat.folder else None,
             }
