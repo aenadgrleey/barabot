@@ -33,6 +33,7 @@ class SubscriptionChat:
     chat_id: int | None  # Telegram chat ID once resolved
     title: str | None
     status: ChatStatus
+    folder: ChatRef | None = None  # the folder link this chat was extracted from
 
 
 @dataclass(frozen=True)
@@ -184,13 +185,19 @@ def _select(conn: sqlite3.Connection, where: str, params: Sequence[object]) -> l
     chats: dict[int, list[SubscriptionChat]] = {row["id"]: [] for row in subs}
     marks = ",".join("?" * len(chats))
     for row in conn.execute(
-        "SELECT sc.subscription_id, c.kind, c.value, c.chat_id, c.title, c.status FROM subscription_chats sc "
-        f"JOIN chats c ON c.id = sc.chat WHERE sc.subscription_id IN ({marks}) ORDER BY c.id",
+        "SELECT sc.subscription_id, c.kind, c.value, c.chat_id, c.title, c.status, "
+        "p.kind AS folder_kind, p.value AS folder_value FROM subscription_chats sc "
+        "JOIN chats c ON c.id = sc.chat LEFT JOIN chats p ON p.id = c.parent_id "
+        f"WHERE sc.subscription_id IN ({marks}) ORDER BY c.id",
         list(chats),
     ):
         chats[row["subscription_id"]].append(
             SubscriptionChat(
-                ref_from_row(row["kind"], row["value"]), row["chat_id"], row["title"], ChatStatus(row["status"])
+                ref_from_row(row["kind"], row["value"]),
+                row["chat_id"],
+                row["title"],
+                ChatStatus(row["status"]),
+                ref_from_row(row["folder_kind"], row["folder_value"]) if row["folder_kind"] else None,
             )
         )
     return [

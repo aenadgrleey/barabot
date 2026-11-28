@@ -152,7 +152,15 @@ def subscription_view(row: SubscriptionRow) -> dict[str, Any]:
         "author": row.author,
         "author_not": row.author_not,
         "query": row.query,
-        "chats": [{"chat": str(chat.ref), "title": chat.title, "status": chat.status.value} for chat in row.chats],
+        "chats": [
+            {
+                "chat": str(chat.ref),
+                "title": chat.title,
+                "status": chat.status.value,
+                "folder": str(chat.folder) if chat.folder else None,
+            }
+            for chat in row.chats
+        ],
     }
 
 

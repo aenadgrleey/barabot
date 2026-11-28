@@ -84,7 +84,7 @@ def test_lists_only_the_users_own_subscriptions(client, db):
     assert response.status_code == 200
     body = response.json()
     assert [s["query"] for s in body["subscriptions"]] == ["2 комнаты"]
-    assert body["subscriptions"][0]["chats"] == [{"chat": "@flats", "title": None, "status": "pending"}]
+    assert body["subscriptions"][0]["chats"] == [{"chat": "@flats", "title": None, "status": "pending", "folder": None}]
     assert body["notifications_blocked"] is False
     assert body["bot_link"] == "https://t.me/barabot_test_bot"
 

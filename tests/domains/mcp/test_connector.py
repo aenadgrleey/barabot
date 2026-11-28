@@ -204,7 +204,7 @@ def test_full_flow_logs_in_through_telegram_and_manages_own_subscriptions(client
         {"author": "сдаёт квартиру", "author_not": "ищет квартиру", "query": "2 комнаты", "chats": ["@prague_flats"]},
     )
     sub = added["structuredContent"]
-    assert sub["chats"] == [{"chat": "@prague_flats", "title": None, "status": "pending"}]
+    assert sub["chats"] == [{"chat": "@prague_flats", "title": None, "status": "pending", "folder": None}]
 
     updated = call_tool(client, access, "update_subscription", {"subscription_id": sub["id"], "author_not": ""})
     assert updated["structuredContent"]["author_not"] is None

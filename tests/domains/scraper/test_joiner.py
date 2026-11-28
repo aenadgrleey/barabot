@@ -327,3 +327,21 @@ def test_failed_title_lookup_keeps_the_chat_joined_and_waits(db):
     assert run(db, client) == (1, [-1000000000555])
     assert chats(db)["id:-1000000000555"] == ("joined", -1000000000555, None)
     assert run(db, client)[0] == 0  # not asked again for a day
+
+
+def test_adding_a_folder_later_links_the_chats_already_watched(db):
+    # The chats were named one by one before; the folder link names the same chats.
+    sub_id = subscriptions.add(db, user_id=USER, author="a", query="q", chats=["@flats"])
+    client = FakeClient()
+    client.usernames["flats"] = channel(111, "Flats", megagroup=True, username="flats")
+    run(db, client)
+    client.folders["Flats_2026"] = folder("Flats folder", channel(111, "Flats", megagroup=True, username="flats"))
+    subscriptions.update(db, sub_id, user_id=USER, chats=["@flats", "t.me/addlist/Flats_2026"])
+
+    run(db, client)
+
+    [row] = subscriptions.list_all(db, user_id=USER)
+    assert [(str(c.ref), c.status.value, str(c.folder) if c.folder else None) for c in row.chats] == [
+        ("@flats", "joined", "https://t.me/addlist/Flats_2026"),
+        ("https://t.me/addlist/Flats_2026", "expanded", None),
+    ]

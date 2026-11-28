@@ -78,6 +78,7 @@
   .row-main { flex: 1; min-width: 0; }
   .row-title { font-size: 16px; line-height: 1.3; font-weight: 500; display: -webkit-box; -webkit-box-orient: vertical;
                -webkit-line-clamp: 2; overflow: hidden; }
+  .row.chat.in-folder { --inset: 108px; padding-left: calc(var(--gutter) + 40px); }
   .row.chat .row-title { font-weight: 400; display: block; white-space: nowrap; text-overflow: ellipsis; }
   .row-subtitle { margin-top: 2px; font-size: 14px; line-height: 1.3; color: var(--subtitle);
                   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -148,7 +149,7 @@ const STATUS = {
   joined: "watching",
   requested: "waiting for admin approval",
   failed: "cannot join",
-  expanded: "folder, its chats are listed above",
+  expanded: "folder",
 };
 
 // Telegram's peer avatar gradients.
@@ -222,11 +223,12 @@ function avatar(chat) {
   return node;
 }
 
-function chatRow(chat) {
+function chatRow(chat, inFolder, count) {
+  const status = chat.status === "expanded" ? "folder · " + (count === 1 ? "1 chat" : count + " chats") : null;
   const subtitle = el("div", { className: "row-subtitle" },
-    el("span", { className: chat.status }, STATUS[chat.status] || chat.status));
+    el("span", { className: chat.status }, status || STATUS[chat.status] || chat.status));
   if (chat.title && !isLink(chat.chat)) subtitle.append(" · " + chat.chat);
-  return el("div", { className: "row chat" },
+  return el("div", { className: "row chat" + (inFolder ? " in-folder" : "") },
     avatar(chat),
     el("div", { className: "row-main" }, el("div", { className: "row-title" }, chatName(chat)), subtitle));
 }
@@ -243,9 +245,16 @@ function subscription(sub) {
         el("div", { className: "kind" }, kind),
         el("div", { className: "query" }, sub.query),
         facts)));
-  // A folder only names the chats it expanded into, so it goes after them.
-  for (const chat of sub.chats) if (chat.status !== "expanded") section.append(chatRow(chat));
-  for (const chat of sub.chats) if (chat.status === "expanded") section.append(chatRow(chat));
+  // Chats from a folder go under the folder's row; the other chats come first.
+  const folders = new Set(sub.chats.filter((chat) => chat.status === "expanded").map((chat) => chat.chat));
+  const inFolder = (chat) => chat.status !== "expanded" && folders.has(chat.folder);
+  for (const chat of sub.chats) if (chat.status !== "expanded" && !inFolder(chat)) section.append(chatRow(chat));
+  for (const folder of sub.chats) {
+    if (folder.status !== "expanded") continue;
+    const children = sub.chats.filter((chat) => inFolder(chat) && chat.folder === folder.chat);
+    section.append(chatRow(folder, false, children.length));
+    for (const chat of children) section.append(chatRow(chat, true));
+  }
   return section;
 }
 
