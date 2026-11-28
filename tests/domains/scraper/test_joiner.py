@@ -31,6 +31,7 @@ class FakeClient:
         self.ids = {-1000000000333: channel(333, "Old", megagroup=True, left=True)}
         self.invites = {"abc": channel(222, "Private", megagroup=True)}
         self.folders = {}
+        self.dialog_filters = []
         self.folder_error = None
         self.member = set()
         self.approval_needed = set()
@@ -55,6 +56,8 @@ class FakeClient:
             if result is None:
                 raise self.folder_error or errors.RPCError(request, "INVITE_SLUG_EXPIRED")
             return result
+        if isinstance(request, functions.messages.GetDialogFiltersRequest):
+            return types.messages.DialogFilters(filters=self.dialog_filters)
         if isinstance(request, functions.channels.JoinChannelRequest):
             chat_id = request.channel.id
             if chat_id in self.approval_needed:
@@ -234,6 +237,22 @@ def test_folder_link_expands_into_its_channels_once(db):
     conn = connect(db)
     assert conn.execute("SELECT count(*) FROM chats").fetchone()[0] == 3
     conn.close()
+
+
+def test_folder_the_account_already_added_takes_its_title_from_the_accounts_folders(db):
+    subscriptions.add(db, user_id=USER, author="a", query="q", chats=["https://t.me/addlist/Mine"])
+    client = FakeClient()
+    client.folders["Mine"] = types.chatlists.ChatlistInviteAlready(
+        filter_id=7, missing_peers=[], already_peers=[], chats=[channel(111, "Flats", megagroup=True)], users=[]
+    )
+    client.dialog_filters = [
+        types.DialogFilterDefault(),
+        types.DialogFilterChatlist(
+            id=7, title=types.TextWithEntities(text="My flats", entities=[]), pinned_peers=[], include_peers=[]
+        ),
+    ]
+    run(db, client)
+    assert chats(db)["list:Mine"] == ("expanded", None, "My flats")
 
 
 def test_folder_telegram_rejects_fails_without_raising(db, caplog):

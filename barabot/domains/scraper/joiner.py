@@ -235,7 +235,7 @@ class ChatJoiner:
             await asyncio.to_thread(self._save, row_id, outcome)
             log.warning("Cannot read folder %s: %s", ref, outcome.reason)
             return
-        title = result.title.text if isinstance(result, types.chatlists.ChatlistInvite) else None
+        title = await self._folder_title(result)
         found = [chat for chat in result.chats if isinstance(chat, types.Channel)]
         channels = found[:MAX_LIST_CHATS]
         if len(found) > MAX_LIST_CHATS:
@@ -255,6 +255,22 @@ class ChatJoiner:
         joined = await asyncio.to_thread(self._save_expansion, row_id, title, children)
         for chat_id in joined:
             log.info("Joined chat %s from folder %s", chat_id, ref)
+
+    async def _folder_title(
+        self, result: types.chatlists.ChatlistInvite | types.chatlists.ChatlistInviteAlready
+    ) -> str | None:
+        """A new folder carries its title; one the account has already added keeps it in the account's folders."""
+        if isinstance(result, types.chatlists.ChatlistInvite):
+            return result.title.text
+        try:
+            filters = await self._client(functions.messages.GetDialogFiltersRequest())
+        except errors.RPCError as exc:
+            log.warning("Cannot read the account's folders: %s", type(exc).__name__)
+            return None
+        for item in filters.filters:
+            if isinstance(item, (types.DialogFilter, types.DialogFilterChatlist)) and item.id == result.filter_id:
+                return item.title.text
+        return None
 
     async def _join_channel(self, channel: types.Channel) -> Outcome:
         """Join one channel extracted from a folder. FloodWait and unknown errors propagate."""
