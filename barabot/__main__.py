@@ -67,7 +67,7 @@ from barabot.domains.processor.stats import StatsReporter
 from barabot.domains.scraper import JoinerService, ScraperService
 from barabot.domains.scraper.ingest import MessageIngest
 from barabot.domains.scraper.photos import PhotoDownloader
-from barabot.domains.scraper.service import make_client
+from barabot.domains.scraper.service import joined_chat_ids, make_client
 
 log = logging.getLogger("barabot")
 
@@ -117,7 +117,7 @@ def _check_config() -> int:
             print(f"  {command}", file=sys.stderr)
         return 2
     print(
-        f"barabot config ok: scraper={cfg.telegram.backend} chats={len(cfg.watch_chats)} "
+        f"barabot config ok: scraper={cfg.telegram.backend} watch_chats={len(cfg.watch_chats)} "
         f"log_level={cfg.log_level} web={cfg.web.public_url} mcp={cfg.web.mcp_url}"
     )
     return 0
@@ -181,11 +181,13 @@ def _announce_start(cfg: Config, budget: Budget) -> None:
         active = conn.execute("SELECT count(*) FROM subscriptions WHERE active = 1").fetchone()[0]
     finally:
         conn.close()
+    # The same chats the scraper reads: WATCH_CHATS and every chat the joiner has joined.
+    watched = frozenset(cfg.watch_chats) | joined_chat_ids(cfg.db_path)
     limit = f"${budget.limit_usd:.2f}" if budget.limit_usd else "no limit"
     notice(
         log,
         "barabot up: watching %d chat(s), %d active subscription(s), Jev spend $%.3f of %s",
-        len(cfg.watch_chats),
+        len(watched),
         active,
         budget.spent_usd(),
         limit,
