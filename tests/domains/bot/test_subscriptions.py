@@ -159,10 +159,10 @@ def test_redecide_marks_listings_undecided(tmp_path, monkeypatch, capsys):
 def test_welcome_offers_the_connector():
     from types import SimpleNamespace
 
-    from barabot.core.config import McpConfig
+    from barabot.core.config import WebConfig
     from barabot.domains.bot.service import welcome_text
 
-    cfg = SimpleNamespace(mcp=McpConfig("https://barabot.example", 8765, "1", "s"))
+    cfg = SimpleNamespace(web=WebConfig("https://barabot.example", 8765))
     text = welcome_text(cfg)  # pyright: ignore[reportArgumentType]
     assert "<code>https://barabot.example/mcp</code>" in text
     assert "Settings &gt; Connectors" in text
@@ -172,7 +172,7 @@ def test_start_clears_the_unreachable_mark(tmp_path):
     import asyncio
     from types import SimpleNamespace
 
-    from barabot.core.config import McpConfig
+    from barabot.core.config import WebConfig
     from barabot.domains.bot import reach
     from barabot.domains.bot.service import BotService
 
@@ -185,8 +185,42 @@ def test_start_clears_the_unreachable_mark(tmp_path):
         async def send_message(self, chat_id, text, **kwargs):
             sent.append(chat_id)
 
-    cfg = SimpleNamespace(db_path=db, mcp=McpConfig("https://barabot.example", 8765, "1", "s"))
-    service = BotService(cfg, SimpleNamespace(client=Client()))  # pyright: ignore[reportArgumentType]
+    cfg = SimpleNamespace(db_path=db, web=WebConfig("https://barabot.example", 8765))
+    service = BotService(cfg, SimpleNamespace(client=Client()), "https://barabot.example/app/")  # pyright: ignore[reportArgumentType]
     asyncio.run(service._on_start(SimpleNamespace(is_private=True, chat_id=42)))  # pyright: ignore[reportArgumentType]
     assert sent == [42]
     assert reach.unreachable_reason(db, 42) is None
+
+
+def test_start_points_the_menu_button_at_the_mini_app(tmp_path):
+    import asyncio
+    from types import SimpleNamespace
+
+    from telethon.tl.functions.bots import SetBotMenuButtonRequest
+
+    from barabot.core.config import WebConfig
+    from barabot.domains.bot.service import BotService
+
+    token = tmp_path / "bot.token"
+    token.write_text("1:abc")
+    requests = []
+
+    class Client:
+        async def start(self, bot_token):
+            assert bot_token == "1:abc"
+
+        def add_event_handler(self, handler, event):
+            pass
+
+        async def __call__(self, request):
+            requests.append(request)
+
+        async def get_me(self):
+            return SimpleNamespace(username="barabot_test_bot")
+
+    cfg = SimpleNamespace(bot_token_path=token, web=WebConfig("https://barabot.example", 8765))
+    service = BotService(cfg, SimpleNamespace(client=Client()), "https://barabot.example/app/")  # pyright: ignore[reportArgumentType]
+    asyncio.run(service.start())
+    [request] = requests
+    assert isinstance(request, SetBotMenuButtonRequest)
+    assert request.button.url == "https://barabot.example/app/"

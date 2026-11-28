@@ -1,6 +1,6 @@
 """The MCP connector: a remote MCP server over `BarabotApi`, with login through Telegram.
 
-A user adds `<MCP_PUBLIC_URL>/mcp` as a connector in Claude (or any MCP
+A user adds `<PUBLIC_URL>/mcp` as a connector in Claude (or any MCP
 client with OAuth), logs in with Telegram once and then manages
 subscriptions by talking to their own agent. Notifications still arrive
 from the bot; the login's `telegram:bot_access` scope lets the bot write
@@ -12,8 +12,8 @@ welcome message is delivered: without it barabot cannot notify anyone.
     /register /authorize /token /revoke   OAuth, see `oauth.py`
     /telegram/callback        Telegram's redirect after login
 
-`McpService` runs uvicorn on 127.0.0.1:MCP_PORT; an HTTPS proxy in front
-(Tailscale Funnel on the server) publishes it as MCP_PUBLIC_URL.
+`build_connector` returns the Starlette app; `barabot.core.web` serves it
+at the root of PUBLIC_URL, next to other domains' apps.
 
 Tool descriptions are the product here: the user's agent writes the
 subscription text, and Jev's results depend on how it is worded.
@@ -30,7 +30,6 @@ from pathlib import Path
 from typing import Annotated, Any, Protocol
 from urllib.parse import urlsplit
 
-import uvicorn
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
 from mcp.server.mcpserver import MCPServer
@@ -43,7 +42,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 from barabot.api import UNSET, ApiError, BarabotApi, SubscriptionRow
-from barabot.core.config import Config, McpConfig
+from barabot.core.config import Config
 from barabot.domains.bot import reach
 from barabot.domains.bot.notifier import BotSender
 from barabot.domains.mcp.oauth import BarabotOAuthProvider, LoginNotFound
@@ -269,16 +268,8 @@ def add_login_callback(server: MCPServer, provider: BarabotOAuthProvider, bot: C
         return RedirectResponse(result.redirect_url, status_code=302)
 
 
-class _QuietServer(uvicorn.Server):
-    """Leave SIGINT and SIGTERM to barabot's own handlers."""
-
-    @contextlib.contextmanager
-    def capture_signals(self) -> Iterator[None]:
-        yield
-
-
 def build_app(db_path: Path, login: TelegramLogin, bot: ConnectorBot, public_url: str, *, port: int) -> Starlette:
-    """The whole HTTP app: OAuth endpoints, the Telegram callback and /mcp."""
+    """The connector's app: OAuth endpoints, the Telegram callback and /mcp."""
 
     async def greet(user_id: int) -> None:
         await bot.send(user_id, WELCOME)
@@ -302,43 +293,10 @@ def build_app(db_path: Path, login: TelegramLogin, bot: ConnectorBot, public_url
     )
 
 
-class McpService:
-    def __init__(self, cfg: McpConfig, db_path: Path, bot: ConnectorBot) -> None:
-        mismatch = login_bot_mismatch(Config.bot_token_path, cfg.login_client_id)
-        if mismatch:
-            raise RuntimeError(mismatch)
-        self.cfg = cfg
-        login = TelegramLogin(cfg.login_client_id, cfg.login_client_secret, cfg.public_url + CALLBACK_PATH)
-        app = build_app(db_path, login, bot, cfg.public_url, port=cfg.port)
-        config = uvicorn.Config(
-            app, host="127.0.0.1", port=cfg.port, log_level="warning", proxy_headers=True, lifespan="on"
-        )
-        self._server = _QuietServer(config)
-        self._task: asyncio.Task[None] | None = None
-
-    async def start(self) -> None:
-        self._task = asyncio.create_task(self._server.serve(), name="mcp-http")
-        while not self._server.started:
-            if self._task.done():
-                self._task.result()  # raises the bind or startup error
-                raise RuntimeError("MCP server stopped during startup")
-            await asyncio.sleep(0.05)
-        log.info("MCP connector on 127.0.0.1:%d as %s/mcp", self.cfg.port, self.cfg.public_url)
-
-    async def run_forever(self, stop: asyncio.Event) -> None:
-        assert self._task is not None, "start() runs first"
-        stopping = asyncio.create_task(stop.wait())
-        try:
-            await asyncio.wait((stopping, self._task), return_when=asyncio.FIRST_COMPLETED)
-        finally:
-            stopping.cancel()
-        if not stop.is_set():
-            self._task.result()
-            raise RuntimeError("MCP server stopped")
-
-    async def stop(self) -> None:
-        if self._task is None:
-            return
-        self._server.should_exit = True
-        with contextlib.suppress(Exception):
-            await self._task
+def build_connector(cfg: Config, db_path: Path, bot: ConnectorBot) -> Starlette:
+    """The connector's app from the configuration. The login must belong to the bot itself."""
+    mismatch = login_bot_mismatch(Config.bot_token_path, cfg.mcp.login_client_id)
+    if mismatch:
+        raise RuntimeError(mismatch)
+    login = TelegramLogin(cfg.mcp.login_client_id, cfg.mcp.login_client_secret, cfg.web.public_url + CALLBACK_PATH)
+    return build_app(db_path, login, bot, cfg.web.public_url, port=cfg.web.port)

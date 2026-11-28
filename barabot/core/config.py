@@ -52,44 +52,59 @@ def _list(name: str) -> list[int]:
 
 
 @dataclass(frozen=True)
-class McpConfig:
-    """The MCP connector, from config/mcp.env. Required: barabot does not start without it."""
+class WebConfig:
+    """The HTTP server behind PUBLIC_URL, from config/web.env. It serves the MCP connector and the Mini App."""
 
-    public_url: str  # HTTPS origin that clients and Telegram see, without a trailing slash
-    port: int  # local port behind the HTTPS proxy, bound to 127.0.0.1
-    login_client_id: str  # Log In With Telegram, from @BotFather > Login Widget
+    public_url: str  # PUBLIC_URL: HTTPS origin that clients and Telegram see, no trailing slash
+    port: int  # WEB_PORT: local port behind the HTTPS proxy, bound to 127.0.0.1
+
+    @property
+    def mcp_url(self) -> str:
+        """What a user pastes into their MCP client: the public URL with /mcp."""
+        return self.public_url + "/mcp"
+
+
+@dataclass(frozen=True)
+class McpConfig:
+    """Log In With Telegram for the MCP connector, from config/mcp.env. Required."""
+
+    login_client_id: str  # from @BotFather > Login Widget
     login_client_secret: str
 
 
-def _mcp_value(name: str) -> str:
+def _file_value(name: str, file: str, readme: str) -> str:
     value = os.getenv(name, "").strip()
     if not value:
-        raise RuntimeError(f"{name} is missing. Write it to config/mcp.env, see README: MCP connector.")
+        raise RuntimeError(f"{name} is missing. Write it to config/{file}, see README: {readme}.")
     return value
 
 
-def _mcp_port() -> int:
-    raw = _mcp_value("MCP_PORT")
-    if not raw.isdigit() or not 0 < int(raw) < 65536:
-        raise RuntimeError(f"MCP_PORT must be a TCP port number, got {raw!r}")
-    return int(raw)
-
-
-def _mcp() -> McpConfig:
-    public_url = _mcp_value("MCP_PUBLIC_URL").rstrip("/")
+def _web() -> WebConfig:
+    old = [name for name in ("MCP_PUBLIC_URL", "MCP_PORT") if os.getenv(name)]
+    if old and not (os.getenv("PUBLIC_URL") and os.getenv("WEB_PORT")):
+        raise RuntimeError(
+            f"{' and '.join(old)} moved: write PUBLIC_URL and WEB_PORT to config/web.env "
+            "and remove the old names from config/mcp.env."
+        )
+    public_url = _file_value("PUBLIC_URL", "web.env", "Web server").rstrip("/")
     if not public_url.startswith("https://"):
-        raise RuntimeError("MCP_PUBLIC_URL must be an https:// URL")
+        raise RuntimeError("PUBLIC_URL must be an https:// URL")
     # Claude connects from Anthropic's servers and refuses a URL that names a port.
     if re.search(r":\d*$", urlsplit(public_url).netloc):
         raise RuntimeError(
-            f"MCP_PUBLIC_URL must not name a port, got {public_url!r}. "
-            "Claude only connects to the standard HTTPS port 443; publish the connector there."
+            f"PUBLIC_URL must not name a port, got {public_url!r}. "
+            "Claude only connects to the standard HTTPS port 443; publish the server there."
         )
+    raw_port = _file_value("WEB_PORT", "web.env", "Web server")
+    if not raw_port.isdigit() or not 0 < int(raw_port) < 65536:
+        raise RuntimeError(f"WEB_PORT must be a TCP port number, got {raw_port!r}")
+    return WebConfig(public_url=public_url, port=int(raw_port))
+
+
+def _mcp() -> McpConfig:
     return McpConfig(
-        public_url=public_url,
-        port=_mcp_port(),
-        login_client_id=_mcp_value("TELEGRAM_LOGIN_CLIENT_ID"),
-        login_client_secret=_mcp_value("TELEGRAM_LOGIN_CLIENT_SECRET"),
+        login_client_id=_file_value("TELEGRAM_LOGIN_CLIENT_ID", "mcp.env", "MCP connector"),
+        login_client_secret=_file_value("TELEGRAM_LOGIN_CLIENT_SECRET", "mcp.env", "MCP connector"),
     )
 
 
@@ -108,6 +123,7 @@ class Config:
     jev_budget_usd: float | None  # hard spend limit on Jev; None = unlimited
     jev_price_per_m_input: float  # USD per million input tokens, used to compute spend
     stats_interval_minutes: int  # digest period; 0 turns the digest off
+    web: WebConfig
     mcp: McpConfig
 
     scraper_session_path: Path = field(default_factory=lambda: PROJECT_ROOT / "config" / "scraper.session")
@@ -141,6 +157,7 @@ def load() -> Config:
     # local scraper session too.
     load_dotenv(telegram_env_path(PROJECT_ROOT / "config"), override=False)
     load_dotenv(PROJECT_ROOT / "config" / "processor.env", override=False)
+    load_dotenv(PROJECT_ROOT / "config" / "web.env", override=False)
     load_dotenv(PROJECT_ROOT / "config" / "mcp.env", override=False)
     load_dotenv(PROJECT_ROOT / "config" / ".env", override=False)
 
@@ -177,5 +194,6 @@ def load() -> Config:
         jev_budget_usd=_non_negative(_float("JEV_BUDGET_USD", None), "JEV_BUDGET_USD"),
         jev_price_per_m_input=_non_negative(_price(), "JEV_PRICE_PER_M_INPUT"),
         stats_interval_minutes=_non_negative(_int("STATS_INTERVAL_MINUTES", 60), "STATS_INTERVAL_MINUTES"),
+        web=_web(),
         mcp=_mcp(),
     )

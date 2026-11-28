@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Barabot</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --page: var(--tg-theme-secondary-bg-color, #efeff4);
+    --section: var(--tg-theme-section-bg-color, var(--tg-theme-bg-color, #ffffff));
+    --text: var(--tg-theme-text-color, #000000);
+    --hint: var(--tg-theme-hint-color, #8e8e93);
+    --subtitle: var(--tg-theme-subtitle-text-color, var(--tg-theme-hint-color, #8e8e93));
+    --link: var(--tg-theme-link-color, #007aff);
+    --accent: var(--tg-theme-accent-text-color, var(--tg-theme-link-color, #007aff));
+    --button: var(--tg-theme-button-color, #007aff);
+    --button-text: var(--tg-theme-button-text-color, #ffffff);
+    --header: var(--tg-theme-section-header-text-color, #6d6d72);
+    --separator: var(--tg-theme-section-separator-color, rgba(60, 60, 67, 0.29));
+    --danger: var(--tg-theme-destructive-text-color, #ff3b30);
+
+    --radius: 10px;
+    --gutter: 16px;
+    --body-size: 17px;
+    --safe-top: calc(var(--tg-safe-area-inset-top, 0px) + var(--tg-content-safe-area-inset-top, 0px));
+    --safe-bottom: max(var(--tg-safe-area-inset-bottom, 0px), env(safe-area-inset-bottom, 0px));
+    --safe-left: max(var(--tg-safe-area-inset-left, 0px), env(safe-area-inset-left, 0px));
+    --safe-right: max(var(--tg-safe-area-inset-right, 0px), env(safe-area-inset-right, 0px));
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html { background: var(--page); }
+  body {
+    margin: 0;
+    min-height: var(--tg-viewport-height, 100vh);
+    padding: calc(var(--safe-top) + 8px) calc(var(--safe-right) + var(--gutter))
+             calc(var(--safe-bottom) + 32px) calc(var(--safe-left) + var(--gutter));
+    background: var(--page);
+    color: var(--text);
+    font: 400 var(--body-size)/1.3 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Roboto", "Segoe UI",
+          "Helvetica Neue", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -webkit-text-size-adjust: 100%;
+    -webkit-user-select: none;
+    user-select: none;
+    overflow-wrap: anywhere;
+  }
+  svg { display: block; }
+
+  /* Hero: icon, title and a short explanation, centred like Telegram's own settings pages. */
+  .hero { display: flex; flex-direction: column; align-items: center; text-align: center;
+          padding: 8px 12px 20px; }
+  .hero-icon { width: 64px; height: 64px; border-radius: 50%; display: grid; place-items: center;
+               margin-bottom: 12px; color: #fff; background: var(--button);
+               background: linear-gradient(160deg, color-mix(in srgb, var(--button) 62%, #ffffff), var(--button)); }
+  .hero-icon svg { width: 32px; height: 32px; }
+  .hero h1 { margin: 0 0 6px; font-size: 22px; line-height: 1.2; font-weight: 600; letter-spacing: -0.2px; }
+  .hero p { margin: 0; max-width: 280px; font-size: 15px; line-height: 1.33; color: var(--hint); }
+  .hero.quiet .hero-icon { color: var(--hint); background: var(--section); }
+  .centered { min-height: calc(var(--tg-viewport-stable-height, 100vh) - var(--safe-top) - 160px);
+              display: flex; flex-direction: column; justify-content: center; }
+
+  /* Sections */
+  .section-header { margin: 0 var(--gutter) 7px; font-size: 13px; line-height: 1.3; text-transform: uppercase;
+                    color: var(--header); letter-spacing: 0.1px; }
+  .section { background: var(--section); border-radius: var(--radius); overflow: hidden; margin-bottom: 20px; }
+  .section + .section-footer { margin-top: -13px; }
+  .section-footer { margin: 0 var(--gutter) 20px; font-size: 13px; line-height: 1.38; color: var(--hint); }
+  .row { position: relative; display: flex; align-items: center; gap: 12px; min-height: 44px;
+         padding: 11px var(--gutter); }
+  .row + .row::before, .details + .row::before {
+    content: ""; position: absolute; top: 0; right: 0; left: var(--inset, var(--gutter));
+    border-top: 0.5px solid var(--separator);
+  }
+  .row.chat { --inset: 68px; padding-top: 8px; padding-bottom: 8px; min-height: 60px; }
+  .row-main { flex: 1; min-width: 0; }
+  .row-title { font-size: 16px; line-height: 1.3; font-weight: 500; display: -webkit-box; -webkit-box-orient: vertical;
+               -webkit-line-clamp: 2; overflow: hidden; }
+  .row.chat .row-title { font-weight: 400; display: block; white-space: nowrap; text-overflow: ellipsis; }
+  .row-subtitle { margin-top: 2px; font-size: 14px; line-height: 1.3; color: var(--subtitle);
+                  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row-subtitle .joined { color: var(--accent); }
+  .row-subtitle .failed { color: var(--danger); }
+
+  /* The search itself: what to look for and whose posts count. */
+  /* Header row of a subscription: a square tile marks it apart from the round chat avatars below. */
+  .details { display: flex; gap: 12px; align-items: flex-start; padding: 12px var(--gutter) 14px; }
+  .details-main { flex: 1; min-width: 0; }
+  .sub-icon { flex: none; width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center;
+              color: #fff; background: var(--button);
+              background: linear-gradient(160deg, color-mix(in srgb, var(--button) 62%, #ffffff), var(--button)); }
+  .sub-icon svg { width: 22px; height: 22px; }
+  .kind { font-size: 13px; line-height: 1.3; font-weight: 500; color: var(--accent); margin-bottom: 2px; }
+  .query { font-size: var(--body-size); line-height: 1.3; font-weight: 600; letter-spacing: -0.2px; }
+  .facts { margin: 10px 0 0; padding: 8px 10px; border-radius: 8px;
+           background: color-mix(in srgb, var(--text) 5%, transparent);
+           display: grid; grid-template-columns: auto 1fr; column-gap: 10px; row-gap: 4px;
+           font-size: 15px; line-height: 1.33; }
+  .facts dt { color: var(--hint); }
+  .facts dd { margin: 0; min-width: 0; }
+
+  /* Chat avatars use Telegram's peer colours. */
+  .avatar { flex: none; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center;
+            color: #fff; font-size: 17px; font-weight: 600; text-transform: uppercase;
+            background: linear-gradient(180deg, var(--a1), var(--a2)); }
+  .avatar svg { width: 22px; height: 22px; }
+  .avatar.folder { background: color-mix(in srgb, var(--hint) 60%, transparent); }
+
+  /* Bot blocked */
+  .alert .row { align-items: flex-start; padding-top: 12px; padding-bottom: 12px; }
+  .alert .row-title { font-weight: 600; -webkit-line-clamp: unset; }
+  .alert .row-subtitle { white-space: normal; font-size: 15px; line-height: 1.33; color: var(--hint); }
+  .alert-icon { flex: none; width: 30px; height: 30px; border-radius: 7px; display: grid; place-items: center;
+                color: #fff; background: var(--danger); margin-top: 1px; }
+  .alert-icon svg { width: 18px; height: 18px; }
+  .action { color: var(--link); text-decoration: none; cursor: pointer; --inset: 58px; padding-left: 58px;
+            align-items: center; min-height: 44px; }
+  .action .row-main { font-size: var(--body-size); }
+  .chevron { flex: none; color: color-mix(in srgb, var(--hint) 70%, transparent); }
+  .chevron svg { width: 8px; height: 13px; }
+  .action:active, .action.pressed { background: color-mix(in srgb, var(--text) 8%, transparent); }
+
+  /* Loading and errors */
+  .state { min-height: 60vh; display: flex; flex-direction: column; align-items: center; justify-content: center;
+           text-align: center; padding: 24px; color: var(--hint); font-size: 15px; }
+  .spinner { width: 28px; height: 28px; border-radius: 50%; border: 2.5px solid var(--separator);
+             border-top-color: var(--hint); animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Android Telegram draws full-width sections with accent-coloured headers. */
+  .android { --radius: 0px; --body-size: 16px; }
+  .android body { padding-left: var(--safe-left); padding-right: var(--safe-right); }
+  .android .section-header { margin-top: 0; font-size: 15px; font-weight: 500; text-transform: none;
+                             color: var(--accent); margin-bottom: 0; padding: 12px var(--gutter) 4px;
+                             background: var(--section); }
+  .android .section-header + .section { margin-top: 0; }
+  .android .section { margin-bottom: 12px; }
+  .android .section-footer { margin-top: -12px; padding: 8px var(--gutter) 12px; }
+</style>
+</head>
+<body>
+<div id="root"><div class="state"><div class="spinner"></div></div></div>
+<script>
+const STATUS = {
+  pending: "joining soon",
+  joined: "watching",
+  requested: "waiting for admin approval",
+  failed: "cannot join",
+  expanded: "folder, its chats are listed above",
+};
+
+// Telegram's peer avatar gradients.
+const AVATAR_COLORS = [
+  ["#ff885e", "#ff516a"], ["#ffcd6a", "#ffa85c"], ["#82b1ff", "#665fff"], ["#a0de7e", "#54cb68"],
+  ["#53edd6", "#28c9b7"], ["#72d5fd", "#2a9ef1"], ["#e0a2f3", "#d669ed"],
+];
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+const ICONS = {
+  search: "M10.5 3a7.5 7.5 0 0 1 5.96 12.05l4.25 4.24a1 1 0 0 1-1.42 1.42l-4.24-4.25A7.5 7.5 0 1 1 10.5 3Zm0 2a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11Z",
+  folder: "M4 5h5.2l2 2H20a1.5 1.5 0 0 1 1.5 1.5v9A1.5 1.5 0 0 1 20 19H4a1.5 1.5 0 0 1-1.5-1.5v-11A1.5 1.5 0 0 1 4 5Z",
+  link: "M10.6 13.4a1 1 0 0 1 0-1.4l3-3a1 1 0 1 1 1.4 1.4l-3 3a1 1 0 0 1-1.4 0Zm-1.8-3.6a1 1 0 0 1 0 1.4l-2.1 2.1a2.5 2.5 0 0 0 3.5 3.5l2.1-2.1a1 1 0 1 1 1.4 1.4l-2.1 2.1a4.5 4.5 0 0 1-6.3-6.3l2.1-2.1a1 1 0 0 1 1.4 0Zm6.4 4.4a1 1 0 0 1 0-1.4l2.1-2.1a2.5 2.5 0 0 0-3.5-3.5l-2.1 2.1a1 1 0 1 1-1.4-1.4l2.1-2.1a4.5 4.5 0 0 1 6.3 6.3l-2.1 2.1a1 1 0 0 1-1.4 0Z",
+  bell: "M12 2.5a6 6 0 0 1 6 6v3.6l1.6 3.1A1 1 0 0 1 18.7 17H5.3a1 1 0 0 1-.9-1.8L6 12.1V8.5a6 6 0 0 1 6-6Zm-2.6 15.5h5.2a2.6 2.6 0 0 1-5.2 0Z",
+  inbox: "M5.4 4h13.2a2 2 0 0 1 1.9 1.4l2 6.6c.1.2.1.4.1.6V18a2 2 0 0 1-2 2H3.4a2 2 0 0 1-2-2v-5.4c0-.2 0-.4.1-.6l2-6.6A2 2 0 0 1 5.4 4Zm0 2-1.8 6H8a1 1 0 0 1 1 1 3 3 0 0 0 6 0 1 1 0 0 1 1-1h4.4l-1.8-6H5.4Z",
+  chevron: "M1.3 1.3a1 1 0 0 1 1.4 0l5 5a1 1 0 0 1 0 1.4l-5 5a1 1 0 1 1-1.4-1.4L5.6 7 1.3 2.7a1 1 0 0 1 0-1.4Z",
+};
+
+let tg = null;
+
+function el(tag, attrs, ...children) {
+  const node = document.createElement(tag);
+  Object.assign(node, attrs || {});
+  for (const child of children) if (child != null) node.append(child);
+  return node;
+}
+
+function icon(name, size) {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", name === "chevron" ? "0 0 8.7 14" : "0 0 24 24");
+  svg.setAttribute("fill", "currentColor");
+  svg.setAttribute("aria-hidden", "true");
+  if (size) { svg.setAttribute("width", size); svg.setAttribute("height", size); }
+  const path = document.createElementNS(SVG_NS, "path");
+  path.setAttribute("d", ICONS[name]);
+  svg.append(path);
+  return svg;
+}
+
+function haptic(kind) {
+  try {
+    const h = tg && tg.HapticFeedback;
+    if (!h) return;
+    if (kind === "select") h.selectionChanged();
+    else h.impactOccurred(kind || "light");
+  } catch (e) { /* older clients have no haptics */ }
+}
+
+function isLink(chat) {
+  return /^(https?:\/\/|t\.me\/)/i.test(chat);
+}
+
+// "@prague_flats" stays as is; "https://t.me/+AbCdEf" becomes "t.me/+AbCdEf".
+function chatName(chat) {
+  return chat.title || chat.chat.replace(/^https?:\/\//i, "");
+}
+
+function avatar(chat) {
+  let hash = 0;
+  for (const ch of chat.chat) hash = (hash * 31 + ch.codePointAt(0)) >>> 0;
+  const [a1, a2] = AVATAR_COLORS[hash % AVATAR_COLORS.length];
+  const node = el("div", { className: "avatar" + (chat.status === "expanded" ? " folder" : "") });
+  node.style.setProperty("--a1", a1);
+  node.style.setProperty("--a2", a2);
+  if (chat.status === "expanded") node.append(icon("folder"));
+  else if (!chat.title && isLink(chat.chat)) node.append(icon("link"));
+  else {
+    const letter = (chat.title || chat.chat).match(/[\p{L}\p{N}]/u);
+    node.textContent = letter ? letter[0] : "#";
+  }
+  return node;
+}
+
+function chatRow(chat) {
+  const subtitle = el("div", { className: "row-subtitle" },
+    el("span", { className: chat.status }, STATUS[chat.status] || chat.status));
+  if (chat.title && !isLink(chat.chat)) subtitle.append(" · " + chat.chat);
+  return el("div", { className: "row chat" },
+    avatar(chat),
+    el("div", { className: "row-main" }, el("div", { className: "row-title" }, chatName(chat)), subtitle));
+}
+
+function subscription(sub) {
+  const facts = el("dl", { className: "facts" }, el("dt", {}, "Who"), el("dd", {}, sub.author));
+  if (sub.author_not) facts.append(el("dt", {}, "Skip"), el("dd", {}, sub.author_not));
+  const chats = sub.chats.filter((chat) => chat.status !== "expanded").length;
+  const kind = "Subscription · " + (chats === 1 ? "1 chat" : chats + " chats");
+  const section = el("div", { className: "section" },
+    el("div", { className: "details" },
+      el("div", { className: "sub-icon" }, icon("search")),
+      el("div", { className: "details-main" },
+        el("div", { className: "kind" }, kind),
+        el("div", { className: "query" }, sub.query),
+        facts)));
+  // A folder only names the chats it expanded into, so it goes after them.
+  for (const chat of sub.chats) if (chat.status !== "expanded") section.append(chatRow(chat));
+  for (const chat of sub.chats) if (chat.status === "expanded") section.append(chatRow(chat));
+  return section;
+}
+
+function hero(iconName, title, text, quiet) {
+  return el("div", { className: "hero" + (quiet ? " quiet" : "") },
+    el("div", { className: "hero-icon" }, icon(iconName)),
+    el("h1", {}, title),
+    el("p", {}, text));
+}
+
+function openBot(link) {
+  haptic("light");
+  if (tg && tg.openTelegramLink) {
+    tg.openTelegramLink(link);
+    tg.close();
+  } else {
+    window.location.href = link;
+  }
+}
+
+function blockedAlert(botLink) {
+  const action = el("a", { className: "row action", href: botLink },
+    el("div", { className: "row-main" }, "Open the bot"),
+    el("div", { className: "chevron" }, icon("chevron")));
+  action.addEventListener("click", (event) => {
+    event.preventDefault();
+    openBot(botLink);
+  });
+  return el("div", { className: "section alert" },
+    el("div", { className: "row" },
+      el("div", { className: "alert-icon" }, icon("bell")),
+      el("div", { className: "row-main" },
+        el("div", { className: "row-title" }, "The bot cannot message you"),
+        el("div", { className: "row-subtitle" },
+          "You get no listings until you open the bot and press Start or Unblock."))),
+    action);
+}
+
+function render(data) {
+  const root = document.getElementById("root");
+  root.replaceChildren();
+  const subs = data.subscriptions;
+  const blocked = data.notifications_blocked;
+  // The warning comes first: nothing below works until the bot can write.
+  if (blocked) root.append(blockedAlert(data.bot_link));
+  if (subs.length === 0) {
+    const empty = hero("inbox", "No subscriptions yet",
+      "Tap “Add subscription” and tell the bot what to look for and in which chats.");
+    root.append(blocked ? empty : el("div", { className: "centered" }, empty));
+    return;
+  }
+  // With the warning on top, the hero would only push the list down.
+  if (!blocked) {
+    root.append(hero("search", "Subscriptions", "Barabot reads these chats and sends you the listings that match."));
+  }
+  root.append(el("div", { className: "section-header" },
+    subs.length === 1 ? "1 subscription" : subs.length + " subscriptions"));
+  for (const sub of subs) root.append(subscription(sub));
+  root.append(el("div", { className: "section-footer" },
+    "Matching listings arrive in your chat with the bot."));
+}
+
+function fail(message) {
+  document.getElementById("root").replaceChildren(
+    el("div", { className: "state" }, hero("search", "Barabot", message, true)));
+}
+
+// Match Telegram's header, background and bottom bar to the page.
+function paintChrome() {
+  if (!tg) return;
+  const at = (v) => !tg.isVersionAtLeast || tg.isVersionAtLeast(v);
+  try {
+    if (at("6.1")) {
+      tg.setHeaderColor("secondary_bg_color");
+      tg.setBackgroundColor("secondary_bg_color");
+    }
+    if (at("7.10")) tg.setBottomBarColor("secondary_bg_color");
+  } catch (e) { /* older clients keep their own colours */ }
+}
+
+// Subscriptions are added in the chat with the bot, so the button leads there.
+function addButton(botLink) {
+  tg.MainButton.setText("Add subscription");
+  tg.MainButton.onClick(() => {
+    haptic("medium");
+    tg.openTelegramLink(botLink);
+    tg.close();
+  });
+  tg.MainButton.show();
+}
+
+async function load() {
+  tg = window.Telegram && window.Telegram.WebApp;
+  if (!tg || !tg.initData) {
+    tg = null;
+    return fail("Open this page from the bot in Telegram.");
+  }
+  if (tg.platform === "android" || tg.platform === "android_x") document.documentElement.classList.add("android");
+  tg.ready();
+  tg.expand();
+  paintChrome();
+  tg.onEvent("themeChanged", paintChrome);
+  try {
+    const response = await fetch("api/subscriptions", { headers: { Authorization: "tma " + tg.initData } });
+    const data = await response.json();
+    if (!response.ok) return fail(data.error || "Something went wrong. Try again later.");
+    render(data);
+    addButton(data.bot_link);
+  } catch (e) {
+    fail("Barabot is not reachable. Try again in a minute.");
+  }
+}
+
+load();
+</script>
+</body>
+</html>

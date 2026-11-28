@@ -69,7 +69,7 @@
 
   <rect class="ext" x="325" y="10" width="130" height="34" rx="6"/><text class="t" x="390" y="32" text-anchor="middle">Mini App page</text>
   <rect class="box" x="325" y="66" width="130" height="60" rx="6"/>
-  <text class="h" x="339" y="88">MiniAppService</text><text class="m" x="339" y="108">HTTP, /api/*</text>
+  <text class="h" x="339" y="88">WebService</text><text class="m" x="339" y="108">HTTP, /app, /mcp</text>
   <rect class="box" x="480" y="66" width="200" height="60" rx="6"/>
   <text class="h" x="494" y="88">BotService</text><text class="m" x="494" y="108">router: commands or agent</text>
   <rect class="hot" x="480" y="148" width="200" height="40" rx="6" style="stroke-dasharray:4 3"/>
@@ -126,17 +126,18 @@
 <p class="legend">Blue arrows show the notification path. Dashed blue means the step gets the live bot client from <code>bot/runtime.py</code>. The Mini App and the bot call the same functions to write <code>subscriptions</code>, so their arrows merge. Arrows pointing into tables are writes. Arrows from <code>process_listing</code> to tables are reads, except when it writes the version into <code>listings</code>.</p>
 
 <h2>Components</h2>
-<p>Barabot runs in one process on a single <code>asyncio</code> event loop. Three services handle outside traffic, and DBOS runs background processing.</p>
-<p><code>__main__</code> starts DBOS first, then starts the three services. On shutdown, it stops them in reverse order.</p>
+<p>Barabot runs in one process on a single <code>asyncio</code> event loop. Four services handle outside traffic, and DBOS runs background processing.</p>
+<p><code>__main__</code> starts DBOS first, then starts the four services. On shutdown, it stops them in reverse order.</p>
 <table>
   <tr><th>Component</th><th>Kind</th><th>Owns</th></tr>
   <tr><td><code>ScraperService</code></td><td>Service</td><td>Telegram user connection via tgmux or Telethon, event handlers, startup backfill</td></tr>
   <tr><td><code>BotService</code></td><td>Service</td><td>Bot API connection, message router, command and agent modes, subscription functions</td></tr>
-  <tr><td><code>MiniAppService</code></td><td>Service</td><td>HTTP server for the Telegram Mini App, serving the static page and <code>/api/*</code></td></tr>
+  <tr><td><code>JoinerService</code></td><td>Service</td><td>Joins the chats that subscriptions name, on the same Telegram client as the scraper, and marks them joined in <code>chats</code></td></tr>
+  <tr><td><code>WebService</code></td><td>Service</td><td>The one HTTP server behind <code>PUBLIC_URL</code>. Mounts the Mini App app under <code>/app</code> and the MCP connector app at the root; knows nothing about either</td></tr>
   <tr><td>DBOS</td><td>Infrastructure</td><td>Workflow state in its own SQLite database at <code>data/dbos.sqlite</code>. We use SQLite in production too because load is small.</td></tr>
   <tr><td>Processing</td><td>DBOS workflows and steps</td><td>Listing assembly, subscription matching, and notification routing</td></tr>
 </table>
-<p>The processor is no longer a service. Its logic now lives in DBOS workflow steps. The three services never call each other directly. They meet only through DBOS and the database.</p>
+<p>The processor is no longer a service. Its logic now lives in DBOS workflow steps. The services never call each other directly. The scraper and the joiner share the Telegram client that <code>__main__</code> creates, and the scraper reads the chats the joiner marks joined from the database. They meet only through DBOS and the database.</p>
 
 <h2>Database tables</h2>
 <p>Application data lives in SQLite at <code>data/barabot.sqlite</code>. DBOS keeps its own system database separate.</p>
@@ -230,18 +231,18 @@
   <tr><th>Interface</th><th>How the user works</th><th>Status</th></tr>
   <tr><td>Command mode</td><td>Explicit bot commands to create, list, edit, and delete searches</td><td>Planned</td></tr>
   <tr><td>Agent mode</td><td>Free text to the bot. An LLM agent turns it into calls to the same subscription functions, exposed as tools.</td><td>Experiment, enabled for part of the users</td></tr>
-  <tr><td>Mini App</td><td>Telegram Mini App with forms for doing the same by hand</td><td>First version: read-only list of the user's searches</td></tr>
-  <tr><td>MCP connector</td><td>The user's own agent (Claude or another MCP client) calls the subscription functions as MCP tools. Login with Telegram's OpenID Connect; barabot is the OAuth server for the client.</td><td>Prototype in <code>barabot/domains/mcp</code>; <code>config/mcp.env</code> is required</td></tr>
+  <tr><td>Mini App</td><td>Telegram Mini App opened from the bot's menu button. Shows the user's searches; "Add subscription" leads back to the chat with the bot</td><td>Read-only list in <code>barabot/domains/miniapp</code></td></tr>
+  <tr><td>MCP connector</td><td>The user's own agent (Claude or another MCP client) calls the subscription functions as MCP tools. Login with Telegram's OpenID Connect; barabot is the OAuth server for the client.</td><td>Prototype in <code>barabot/domains/mcp</code>; <code>config/web.env</code> and <code>config/mcp.env</code> are required</td></tr>
 </table>
 <p><strong>Chat routing</strong></p>
 <p>Command mode and agent mode are two modes of one chat. A router in <code>BotService</code> receives every incoming message and picks the mode per user. Agent mode runs as an experiment. Users in the experiment group go to the agent, and everyone else goes to command mode.</p>
 <p>The experiment group is set in <code>BARABOT_AGENT_USERS</code> inside <code>config/.env</code> as a comma-separated list of Telegram user IDs. Agent users get no slash commands. Every message they send goes to the agent.</p>
 <p><strong>Telegram Mini App</strong></p>
-<p>The Mini App is a web page opened from the bot. <code>MiniAppService</code> runs as a third service in the same <code>TaskGroup</code> and serves the page plus a small HTTP API. The API validates Telegram <code>initData</code> with the bot token to identify the user, then calls the same subscription functions as the chat.</p>
-<p>First version scope:</p>
+<p>The Mini App is a web page opened from the bot. The miniapp domain builds its own Starlette app and knows nothing about MCP; <code>WebService</code> mounts it under <code>/app</code> on the same public URL as the connector, so it needs no extra port or proxy. <code>__main__</code> gives <code>BotService</code> the page URL <code>&lt;PUBLIC_URL&gt;/app/</code>, and the bot sets its menu button to it on every start. The API validates Telegram <code>initData</code> with the bot token to identify the user, then calls <code>BarabotApi</code> like every other interface.</p>
 <ul>
-  <li><code>GET /api/subscriptions</code> returns the current user's searches.</li>
-  <li>The page renders them as a list, with no editing yet.</li>
+  <li><code>GET /app/</code> serves the page, a single HTML file with no build step.</li>
+  <li><code>GET /app/api/subscriptions</code> returns the current user's searches and whether the bot can message them. The page sends <code>Authorization: tma &lt;initData&gt;</code>.</li>
+  <li>Adding and changing searches stays in the chat. Telegram's main button "Add subscription" opens the bot chat and closes the Mini App.</li>
 </ul>
 
 <h2>DBOS findings</h2>
@@ -270,7 +271,6 @@
 <h2>Open questions</h2>
 <p>These points still need decisions before implementation.</p>
 <ul>
-  <li><strong>Public URL.</strong> Which public HTTPS URL to use for <code>MiniAppService</code>.</li>
   <li><strong>Message texts.</strong> Exact wording for <code>new</code>, <code>unmatched</code>, and <code>removed</code>.</li>
   <li><strong>Notifying on <code>unmatched</code> and <code>removed</code>.</strong> An edit alone triggers no Telegram notification, so this likely needs a reply to the original message.</li>
   <li><strong>Re-matching after <code>unmatched</code>.</strong> Whether a later <code>updated</code> event should notify the user after they were previously told the listing no longer matched.</li>

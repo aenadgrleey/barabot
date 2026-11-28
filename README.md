@@ -38,7 +38,8 @@ Set `TELEGRAM_BACKEND` in `config/.env`. An exported environment variable takes 
 | `config/telegram.env` | `API_ID` and `API_HASH` of the Telegram application from [my.telegram.org](https://my.telegram.org). Required: the bot connects with them, and a local scraper session uses them too. An older `scraper.env` is renamed to it on start |
 | `config/scraper.session` | Authorized local Telethon session |
 | `config/processor.env` | `TYPESAFE_API_KEY` for subscription matching |
-| `config/mcp.env` | MCP connector: `MCP_PUBLIC_URL`, `MCP_PORT`, `TELEGRAM_LOGIN_CLIENT_ID`, `TELEGRAM_LOGIN_CLIENT_SECRET`. Required |
+| `config/web.env` | Web server for the MCP connector and the Mini App: `PUBLIC_URL`, `WEB_PORT`. Required |
+| `config/mcp.env` | MCP connector login: `TELEGRAM_LOGIN_CLIENT_ID`, `TELEGRAM_LOGIN_CLIENT_SECRET`. Required |
 | `config/bot.token` | Verified BotFather token |
 | `config/bot.session` | The bot's Telethon session, created on first start |
 
@@ -60,24 +61,40 @@ A chat reference may also be a shared folder link of the form `t.me/addlist/<slu
 
 A listing matches when Jev gives the author role at least 0.6 and answers `fits` for the query. Every check, matched or not, is stored in `matches` with the probabilities, so you can see why a listing was or was not sent.
 
+## Web server
+
+One HTTP server serves every web part of barabot under one public HTTPS URL: the Mini App under `/app`, and the MCP connector at the root, where its OAuth metadata has to live. Each domain builds its own app; [barabot/core/web.py](barabot/core/web.py) only puts them under one URL.
+
+1. Publish the local port over HTTPS on port 443. Claude connects from Anthropic's servers and [cannot use a URL that names a port](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp), so barabot refuses a `PUBLIC_URL` with one. On the server, with Tailscale Funnel: `tailscale funnel --bg --https=443 http://127.0.0.1:8765`, which makes `PUBLIC_URL=https://aenaut.ilish-leaffish.ts.net`.
+2. Write `config/web.env`:
+
+```bash
+PUBLIC_URL=https://aenaut.ilish-leaffish.ts.net
+WEB_PORT=8765
+```
+
+Barabot does not start without this file; `run --check` prints `web=<url>`. An installation that still has `MCP_PUBLIC_URL` and `MCP_PORT` in `config/mcp.env` fails the check with a message to move them here.
+
 ## MCP connector
 
-Users can manage subscriptions from their own agent. Barabot serves a remote MCP server at `<MCP_PUBLIC_URL>/mcp` with four tools (list, add, update, remove) over `BarabotApi`. The user adds that URL as a connector in Claude or another MCP client with OAuth and logs in with Telegram once. Barabot is the OAuth server for the client; Telegram's [OpenID Connect login](https://core.telegram.org/bots/telegram-login) tells it who the user is. The login asks for `telegram:bot_access`, so the bot can send listings without `/start`, and the bot greets the user right after the login. The code is in [barabot/domains/mcp](barabot/domains/mcp).
+Users can manage subscriptions from their own agent. Barabot serves a remote MCP server at `<PUBLIC_URL>/mcp` with four tools (list, add, update, remove) over `BarabotApi`. The user adds that URL as a connector in Claude or another MCP client with OAuth and logs in with Telegram once. Barabot is the OAuth server for the client; Telegram's [OpenID Connect login](https://core.telegram.org/bots/telegram-login) tells it who the user is. The login asks for `telegram:bot_access`, so the bot can send listings without `/start`, and the bot greets the user right after the login. The code is in [barabot/domains/mcp](barabot/domains/mcp).
 
 Setup:
 
-1. In @BotFather, open the bot, then **Login Widget**. Copy the Client ID and Client Secret, and add `<MCP_PUBLIC_URL>/telegram/callback` to Allowed URLs.
-2. Publish the local port over HTTPS on port 443. Claude connects from Anthropic's servers and [cannot use a URL that names a port](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp), so barabot refuses an `MCP_PUBLIC_URL` with one. On the server, with Tailscale Funnel: `tailscale funnel --bg --https=443 http://127.0.0.1:8765`, which makes `MCP_PUBLIC_URL=https://aenaut.ilish-leaffish.ts.net`.
+1. Set up the [web server](#web-server).
+2. In @BotFather, open the bot, then **Login Widget**. Copy the Client ID and Client Secret, and add `<PUBLIC_URL>/telegram/callback` to Allowed URLs.
 3. Write `config/mcp.env`:
 
 ```bash
-MCP_PUBLIC_URL=https://aenaut.ilish-leaffish.ts.net
-MCP_PORT=8765
 TELEGRAM_LOGIN_CLIENT_ID=...
 TELEGRAM_LOGIN_CLIENT_SECRET=...
 ```
 
 Barabot does not start without this file; `run --check` prints `mcp=<url>`. OAuth clients, codes and tokens live in the `oauth_*` tables; tokens are stored as hashes. Access tokens last an hour, refresh tokens 90 days and rotate on use.
+
+## Mini App
+
+The bot's menu button opens a Telegram Mini App at `<PUBLIC_URL>/app/` with the user's subscriptions and the status of each chat. It is read-only: its "Add subscription" button leads to the chat with the bot. The [web server](#web-server) serves it, so it needs no setup of its own; barabot sets the menu button on every start. The page identifies the user by Telegram's `initData`, checked with the bot token. The code is in [barabot/domains/miniapp](barabot/domains/miniapp).
 
 ## Deploy
 

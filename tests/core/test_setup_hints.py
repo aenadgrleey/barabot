@@ -26,6 +26,7 @@ def test_missing_setup_commands_are_ordered_and_scraper_is_deduplicated(
         setup_hints.SCRAPER_COMMAND,
         setup_hints.PROCESSOR_COMMAND,
         setup_hints.BOT_COMMAND,
+        setup_hints.WEB_HINT,
         setup_hints.MCP_HINT,
     ]
 
@@ -34,6 +35,7 @@ def test_missing_setup_commands_are_ordered_and_scraper_is_deduplicated(
     (config / ".env").write_text("BARABOT_ENV=develop\n")
     (config / "processor.env").touch()
     (config / "bot.token").touch()
+    (config / "web.env").touch()
     (config / "mcp.env").touch()
     assert setup_hints.missing_setup_commands(tmp_path) == [setup_hints.SCRAPER_COMMAND]
 
@@ -43,7 +45,7 @@ def test_next_setup_command_reaches_ready_only_for_complete_setup(
 ) -> None:
     config = tmp_path / "config"
     config.mkdir()
-    for name in (".env", "telegram.env", "processor.env", "bot.token", "mcp.env"):
+    for name in (".env", "telegram.env", "processor.env", "bot.token", "web.env", "mcp.env"):
         (config / name).touch()
 
     (config / ".env").write_text("BARABOT_ENV=develop\n")

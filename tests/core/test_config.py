@@ -15,6 +15,8 @@ _ENV_VARS = (
     "WATCH_CHATS",
     "LOG_LEVEL",
     "TYPESAFE_API_KEY",
+    "PUBLIC_URL",
+    "WEB_PORT",
     "MCP_PUBLIC_URL",
     "MCP_PORT",
     "TELEGRAM_LOGIN_CLIENT_ID",
@@ -42,8 +44,8 @@ def _set_valid_environment(monkeypatch: pytest.MonkeyPatch, environment: str) ->
     monkeypatch.setenv("API_ID", "12345")
     monkeypatch.setenv("API_HASH", "a" * 32)
     monkeypatch.setenv("TYPESAFE_API_KEY", "test-typesafe-key")
-    monkeypatch.setenv("MCP_PUBLIC_URL", "https://barabot.example/")
-    monkeypatch.setenv("MCP_PORT", "8765")
+    monkeypatch.setenv("PUBLIC_URL", "https://barabot.example/")
+    monkeypatch.setenv("WEB_PORT", "8765")
     monkeypatch.setenv("TELEGRAM_LOGIN_CLIENT_ID", "1")
     monkeypatch.setenv("TELEGRAM_LOGIN_CLIENT_SECRET", "s")
 
@@ -64,9 +66,11 @@ def test_load_merges_domain_files_before_process_fallback(
         project_root / "config" / "processor.env": {
             "TYPESAFE_API_KEY": "processor-key",
         },
+        project_root / "config" / "web.env": {
+            "PUBLIC_URL": "https://barabot.example",
+            "WEB_PORT": "8765",
+        },
         project_root / "config" / "mcp.env": {
-            "MCP_PUBLIC_URL": "https://barabot.example",
-            "MCP_PORT": "8765",
             "TELEGRAM_LOGIN_CLIENT_ID": "1",
             "TELEGRAM_LOGIN_CLIENT_SECRET": "s",
         },
@@ -144,22 +148,39 @@ def test_telegram_backend_file_and_override(tmp_path, monkeypatch):
         TelegramBackend.configured(tmp_path)
 
 
-def test_mcp_config_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_web_and_mcp_config_are_required(monkeypatch: pytest.MonkeyPatch) -> None:
     config, _ = _import_config(monkeypatch)
     _set_valid_environment(monkeypatch, "prod")
-    assert config.load().mcp.public_url == "https://barabot.example"
-    monkeypatch.setenv("MCP_PORT", "http")
-    with pytest.raises(RuntimeError, match="MCP_PORT must be a TCP port"):
+    loaded = config.load()
+    assert loaded.web.public_url == "https://barabot.example"
+    assert loaded.web.mcp_url == "https://barabot.example/mcp"
+    monkeypatch.setenv("WEB_PORT", "http")
+    with pytest.raises(RuntimeError, match="WEB_PORT must be a TCP port"):
         config.load()
-    monkeypatch.delenv("MCP_PORT")
-    with pytest.raises(RuntimeError, match="MCP_PORT is missing.*config/mcp.env"):
+    monkeypatch.delenv("WEB_PORT")
+    with pytest.raises(RuntimeError, match="WEB_PORT is missing.*config/web.env"):
+        config.load()
+    monkeypatch.setenv("WEB_PORT", "8765")
+    monkeypatch.delenv("TELEGRAM_LOGIN_CLIENT_ID")
+    with pytest.raises(RuntimeError, match="TELEGRAM_LOGIN_CLIENT_ID is missing.*config/mcp.env"):
         config.load()
 
 
 @pytest.mark.parametrize("url", ["https://barabot.example:8443", "https://barabot.example:443/"])
-def test_mcp_public_url_must_not_name_a_port(monkeypatch: pytest.MonkeyPatch, url: str) -> None:
+def test_public_url_must_not_name_a_port(monkeypatch: pytest.MonkeyPatch, url: str) -> None:
     config, _ = _import_config(monkeypatch)
     _set_valid_environment(monkeypatch, "prod")
-    monkeypatch.setenv("MCP_PUBLIC_URL", url)
-    with pytest.raises(RuntimeError, match="MCP_PUBLIC_URL must not name a port.*443"):
+    monkeypatch.setenv("PUBLIC_URL", url)
+    with pytest.raises(RuntimeError, match="PUBLIC_URL must not name a port.*443"):
+        config.load()
+
+
+def test_the_old_mcp_names_ask_for_web_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    config, _ = _import_config(monkeypatch)
+    _set_valid_environment(monkeypatch, "prod")
+    monkeypatch.delenv("PUBLIC_URL")
+    monkeypatch.delenv("WEB_PORT")
+    monkeypatch.setenv("MCP_PUBLIC_URL", "https://barabot.example")
+    monkeypatch.setenv("MCP_PORT", "8765")
+    with pytest.raises(RuntimeError, match="MCP_PUBLIC_URL and MCP_PORT moved.*config/web.env"):
         config.load()

@@ -2,8 +2,9 @@
 
 It gets the bot as a `TelethonSender` from `__main__` and connects its
 client; `Notifier` and the MCP connector send through the same object. For now the bot answers /start, which also lets Telegram
-deliver to that user; subscription commands go through
-`barabot.api.BarabotApi` and come next.
+deliver to that user, and points its menu button at the Mini App URL that
+`__main__` passes in; subscription
+commands go through `barabot.api.BarabotApi` and come next.
 """
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ import html
 import logging
 
 from telethon import events
+from telethon.tl.functions.bots import SetBotMenuButtonRequest
+from telethon.tl.types import BotMenuButton, InputUserEmpty
 
 from barabot.core.config import Config
 from barabot.domains.bot import reach
@@ -20,6 +23,7 @@ from barabot.domains.bot.client import TelethonSender
 
 log = logging.getLogger(__name__)
 
+MENU_BUTTON = "Subscriptions"
 WELCOME = "Hi! Listings that match your subscriptions will arrive here."
 CONNECT_HINT = (
     "\n\nSet up subscriptions by talking to your assistant: in Claude, open Settings &gt; Connectors &gt; "
@@ -29,18 +33,23 @@ CONNECT_HINT = (
 
 def welcome_text(cfg: Config) -> str:
     """The /start reply in HTML. The connector link is inline code, which Telegram copies on tap."""
-    return html.escape(WELCOME) + CONNECT_HINT.format(url=html.escape(f"{cfg.mcp.public_url}/mcp"))
+    return html.escape(WELCOME) + CONNECT_HINT.format(url=html.escape(cfg.web.mcp_url))
 
 
 class BotService:
-    def __init__(self, cfg: Config, bot: TelethonSender) -> None:
+    def __init__(self, cfg: Config, bot: TelethonSender, menu_url: str) -> None:
         self.cfg = cfg
         self.client = bot.client
+        self._menu_url = menu_url
 
     async def start(self) -> None:
         token = self.cfg.bot_token_path.read_text(encoding="utf-8").strip()
         await self.client.start(bot_token=token)  # pyright: ignore[reportGeneralTypeIssues]  # a coroutine inside a running loop
         self.client.add_event_handler(self._on_start, events.NewMessage(incoming=True, pattern=r"^/start\b"))
+        # The default menu button for every user opens the Mini App. Set on each start, so it follows PUBLIC_URL.
+        await self.client(
+            SetBotMenuButtonRequest(user_id=InputUserEmpty(), button=BotMenuButton(MENU_BUTTON, self._menu_url))
+        )
         me = await self.client.get_me()
         log.info("Bot connected as @%s", getattr(me, "username", "?"))
 

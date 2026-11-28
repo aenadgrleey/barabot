@@ -39,6 +39,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from barabot.api import BarabotApi
 from barabot.core import db, durable
 from barabot.core.config import Config
 from barabot.core.locks import _acquire_lock, _release_lock, _remove_pid, _write_pid
@@ -53,10 +54,12 @@ from barabot.core.setup_hints import (
     setup_guidance_commands,
 )
 from barabot.core.telegram import TelegramConfigError
+from barabot.core.web import WebService
 from barabot.domains.bot.client import TelethonSender, make_bot_client
 from barabot.domains.bot.notifier import Notifier
 from barabot.domains.bot.service import BotService
-from barabot.domains.mcp.server import McpService, login_bot_mismatch
+from barabot.domains.mcp.server import build_connector, login_bot_mismatch
+from barabot.domains.miniapp import routes as miniapp
 from barabot.domains.processor.budget import Budget
 from barabot.domains.processor.listing import ListingProcessor
 from barabot.domains.processor.matching import JEV_IMAGES, JevDecider
@@ -115,7 +118,7 @@ def _check_config() -> int:
         return 2
     print(
         f"barabot config ok: scraper={cfg.telegram.backend} chats={len(cfg.watch_chats)} "
-        f"log_level={cfg.log_level} mcp={cfg.mcp.public_url}/mcp"
+        f"log_level={cfg.log_level} web={cfg.web.public_url} mcp={cfg.web.mcp_url}"
     )
     return 0
 
@@ -132,6 +135,10 @@ def _build_matching(cfg: Config, budget: Budget) -> tuple[JevDecider, PhotoDownl
     return decider, PhotoDownloader(JEV_IMAGES, cfg.media_dir)
 
 
+def _bot_token(cfg: Config) -> str:
+    return cfg.bot_token_path.read_text(encoding="utf-8").strip()
+
+
 def _build_services(
     cfg: Config,
     processor: ListingProcessor,
@@ -146,8 +153,15 @@ def _build_services(
     services: list[Service] = [
         ScraperService(cfg, tg_client, MessageIngest(cfg.db_path, processor.schedule), photos),
         JoinerService(cfg.db_path, tg_client),
-        BotService(cfg, bot),
-        McpService(cfg.mcp, cfg.db_path, bot),
+        BotService(cfg, bot, menu_url=miniapp.page_url(cfg.web.public_url)),
+        # Each domain builds its own app; the web server only puts them under one URL.
+        WebService(
+            cfg.web,
+            [
+                (miniapp.PATH, miniapp.build_app(BarabotApi(cfg.db_path), cfg.db_path, _bot_token(cfg), bot.link)),
+                ("", build_connector(cfg, cfg.db_path, bot)),  # the root: OAuth metadata lives in /.well-known
+            ],
+        ),
     ]
     if cfg.stats_interval_minutes:
         services.append(StatsReporter(cfg.db_path, budget, interval_seconds=cfg.stats_interval_minutes * 60))
