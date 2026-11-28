@@ -289,3 +289,41 @@ def test_service_joins_until_stopped(db):
 
     asyncio.run(asyncio.wait_for(scenario(), 5))
     assert chats(db)["username:flats"][0] == ChatStatus.JOINED
+
+
+def _mark_joined_without_title(db, value, days_ago):
+    conn = connect(db)
+    try:
+        conn.execute(
+            "UPDATE chats SET status = 'joined', chat_id = CAST(value AS INTEGER), title = NULL, "
+            "updated_at = datetime('now', ?) WHERE kind = 'id' AND value = ?",
+            (f"-{days_ago} days", value),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_joined_chat_without_title_gets_its_title(db):
+    # Older code marked WATCH_CHATS joined without asking Telegram, so they had no title.
+    subscriptions.add(db, user_id=USER, author="a", query="q", chats=["-1000000000333"])
+    _mark_joined_without_title(db, "-1000000000333", days_ago=3)
+    client = FakeClient()
+
+    tried, joined = run(db, client)
+
+    assert tried == 1
+    assert joined == [-1000000000333]
+    assert chats(db)["id:-1000000000333"] == ("joined", -1000000000333, "Old")
+    assert client.requests == []  # looked up, not joined
+    assert run(db, client)[0] == 0
+
+
+def test_failed_title_lookup_keeps_the_chat_joined_and_waits(db):
+    subscriptions.add(db, user_id=USER, author="a", query="q", chats=["-1000000000555"])
+    _mark_joined_without_title(db, "-1000000000555", days_ago=3)
+    client = FakeClient()  # does not know chat 555
+
+    assert run(db, client) == (1, [-1000000000555])
+    assert chats(db)["id:-1000000000555"] == ("joined", -1000000000555, None)
+    assert run(db, client)[0] == 0  # not asked again for a day

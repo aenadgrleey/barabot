@@ -12,7 +12,8 @@ it takes the chats that an active subscription points to and that are
     failed      tried again every FAILED_RETRY, in case the chat changed
 
 joins them one at a time and writes back the status, the chat ID and the
-title. The database is the only link to the scraper: it reads every chat
+title. A joined chat without a title, which older code left behind, gets
+its title looked up; that is tried again every FAILED_RETRY. The database is the only link to the scraper: it reads every chat
 marked joined. The scraper connects the client, so it starts before the
 joiner and stops after it.
 
@@ -188,7 +189,7 @@ class ChatJoiner:
             await asyncio.sleep(delay)
 
     async def run_once(self) -> int:
-        """Try every due chat once; return how many were tried."""
+        """Try every due chat once, then look up missing titles; return how many chats were tried."""
         due = await asyncio.to_thread(self._due)
         for n, chat in enumerate(due):
             if n:
@@ -204,7 +205,24 @@ class ChatJoiner:
                 log.info("Asked to join %s; waiting for an admin", chat.ref)
             else:
                 log.warning("Cannot join %s: %s", chat.ref, outcome.reason)
-        return len(due)
+        untitled = await asyncio.to_thread(self._untitled)
+        for n, (row_id, chat_id) in enumerate(untitled):
+            if n or due:
+                await asyncio.sleep(self._pause)
+            await self._fill_title(row_id, chat_id)
+        return len(due) + len(untitled)
+
+    async def _fill_title(self, row_id: int, chat_id: int) -> None:
+        """Look up the title of a joined chat. A failed lookup keeps the chat joined: the scraper reads it."""
+        try:
+            entity = await self._client.get_entity(chat_id)
+            title = getattr(entity, "title", None)
+        except (ValueError, *_GONE) as exc:
+            title = None
+            log.warning("Cannot look up the title of chat %s: %s", chat_id, type(exc).__name__)
+        await asyncio.to_thread(self._save_title, row_id, title)
+        if title:
+            log.info("Chat %s is %s", chat_id, title)
 
     async def _expand(self, row_id: int, ref: ChatList) -> None:
         """Read a folder once, join its channels, and write them in one transaction."""
@@ -264,6 +282,33 @@ class ChatJoiner:
                 (REQUESTED_RETRY, FAILED_RETRY),
             ).fetchall()
             return [Due(row["id"], ref_from_row(row["kind"], row["value"]), ChatStatus(row["status"])) for row in rows]
+        finally:
+            conn.close()
+
+    def _untitled(self) -> list[tuple[int, int]]:
+        """Joined chats of active subscriptions that have a chat ID but no title, as (row ID, chat ID)."""
+        conn = connect(self._db_path)
+        try:
+            rows = conn.execute(
+                "SELECT c.id, c.chat_id FROM chats c "
+                "WHERE EXISTS (SELECT 1 FROM subscription_chats sc JOIN subscriptions s ON s.id = sc.subscription_id "
+                "              WHERE sc.chat = c.id AND s.active = 1) "
+                "AND c.status = 'joined' AND c.title IS NULL AND c.chat_id IS NOT NULL "
+                "AND c.updated_at <= datetime('now', ?) ORDER BY c.id",
+                (FAILED_RETRY,),
+            ).fetchall()
+            return [(row["id"], row["chat_id"]) for row in rows]
+        finally:
+            conn.close()
+
+    def _save_title(self, row_id: int, title: str | None) -> None:
+        conn = connect(self._db_path)
+        try:
+            with transaction(conn):
+                conn.execute(
+                    "UPDATE chats SET title = COALESCE(?, title), updated_at = datetime('now') WHERE id = ?",
+                    (title, row_id),
+                )
         finally:
             conn.close()
 
