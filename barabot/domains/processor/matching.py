@@ -43,7 +43,7 @@ from typesafe_sdk import (
 )
 
 from barabot.core.images import ImageSpec
-from barabot.domains.processor.budget import Budget
+from barabot.domains.budget import Budget
 
 log = logging.getLogger(__name__)
 
@@ -161,12 +161,15 @@ def read_decisions(
 
 
 class JevDecider:
-    """One request per call: text only, or text with photos (at most JEV_IMAGES.max_images)."""
+    """One request per call: text only, or text with photos (at most JEV_IMAGES.max_images).
 
-    def __init__(self, client: AsyncTypeSafeClient, model: str = MODEL, budget: Budget | None = None) -> None:
+    Every request passes the budget's Jev limit first and is charged to the subscriptions it checked after.
+    """
+
+    def __init__(self, client: AsyncTypeSafeClient, budget: Budget, model: str = MODEL) -> None:
         self._client = client
-        self._model = model
         self._budget = budget
+        self._model = model
 
     async def decide(
         self, text: str, subscriptions: Sequence[Subscription], photos: Sequence[Path] = ()
@@ -185,8 +188,7 @@ class JevDecider:
             state["photos"] = [Image(path) for path in photos]
             headers = IMAGES_HEADER
         round = 2 if photos else 1
-        if self._budget is not None:
-            await self._budget.check_async()  # raises BudgetExhausted
+        await self._budget.check_jev_async()  # raises BudgetExhausted
         answers = await self._client.system_one(
             state=state, questions=questions, model=self._model, extra_headers=headers
         )
@@ -203,14 +205,14 @@ class JevDecider:
             len(photos),
             input_tokens,
         )
-        if self._budget is not None:
-            await self._budget.record_async(
-                round=round,
-                questions=len(questions),
-                photos=len(photos),
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-            )
+        await self._budget.record_jev_async(
+            subscription_ids=[sub.id for sub in subscriptions],
+            round=round,
+            questions=len(questions),
+            photos=len(photos),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
         return read_decisions(answers, subscriptions, author_key, round=round)
 
     async def aclose(self) -> None:

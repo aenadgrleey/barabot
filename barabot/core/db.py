@@ -5,7 +5,8 @@ domain tables: `messages` written by the scraper, `listings` whose `rev`
 the scraper bumps and whose content and `version` processing writes,
 `subscriptions` with their `chats` written by the bot, and `matches`, the
 decision processing makes for every listing version and subscription,
-and `deliveries`, what the bot has shown each user. The `oauth_*` tables
+and `deliveries`, what the bot has shown each user. `jev_usage` logs every
+Jev request and `spend` charges it to users. The `oauth_*` tables
 belong to the MCP connector. A `chats` row named by a folder link becomes
 `expanded`; the chats extracted from it are rows with `parent_id` set.
 
@@ -211,6 +212,24 @@ CREATE TABLE IF NOT EXISTS jev_usage (
     input_tokens  INTEGER NOT NULL,
     output_tokens INTEGER NOT NULL
 );
+
+-- Spend ledger, see barabot/domains/budget. One row per paid request and
+-- subscription it served, append-only.
+--   source      what was paid for: 'jev' (request_id is jev_usage.id)
+--   user_id     the subscription's user; NULL for spend from before the ledger
+--   nano_usd    the share in 1e-9 USD, priced when the row was written
+CREATE TABLE IF NOT EXISTS spend (
+    id              INTEGER PRIMARY KEY,
+    at              TEXT    NOT NULL DEFAULT (datetime('now')),
+    source          TEXT    NOT NULL,
+    request_id      INTEGER NOT NULL,
+    user_id         INTEGER,
+    subscription_id INTEGER,
+    nano_usd        INTEGER NOT NULL CHECK (nano_usd >= 0)
+);
+CREATE INDEX IF NOT EXISTS spend_by_request ON spend (source, request_id);
+CREATE INDEX IF NOT EXISTS spend_by_user ON spend (user_id, at);
+CREATE INDEX IF NOT EXISTS spend_by_at ON spend (at);
 """
 
 # Columns added after a table first shipped: CREATE TABLE IF NOT EXISTS

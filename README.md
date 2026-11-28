@@ -61,6 +61,14 @@ A chat reference may also be a shared folder link of the form `t.me/addlist/<slu
 
 A listing matches when Jev gives the author role at least 0.6 and answers `fits` for the query. Every check, matched or not, is stored in `matches` with the probabilities, so you can see why a listing was or was not sent.
 
+## Spend
+
+Every Jev request is charged to the users whose subscriptions it checked, in the `spend` table. One request checks a listing against every subscription of its chat, so its cost is split equally between those subscriptions; a user with two of them pays two shares. Amounts are nano-dollars priced with `JEV_PRICE_PER_M_INPUT` when the request is made, so a new price does not reprice history. `JEV_BUDGET_USD` limits the ledger's Jev total, and the hourly digest lists every user charged in the hour with their subscriptions and chats. One `Budget` instance, built in `__main__`, is injected into everything that pays or reports on spend. Requests from before the ledger are charged to no user on the first start. See [barabot/domains/budget](barabot/domains/budget).
+
+```bash
+python -m barabot spend --days 7    # total, per day and per user
+```
+
 ## Web server
 
 One HTTP server serves every web part of barabot under one public HTTPS URL: the Mini App under `/app`, and the MCP connector at the root, where its OAuth metadata has to live. Each domain builds its own app; [barabot/core/web.py](barabot/core/web.py) only puts them under one URL.

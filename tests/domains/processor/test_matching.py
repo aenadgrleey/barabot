@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 from typesafe_sdk import Image, SystemOneResponse
 
+from barabot.core.db import migrate
+from barabot.domains.budget import START, Budget, BudgetExhausted
 from barabot.domains.processor.matching import (
     IMAGES_HEADER,
     JEV_IMAGES,
@@ -100,9 +102,31 @@ class FakeClient:
         pass
 
 
-def test_text_round_sends_text_only_and_reads_answers():
+@pytest.fixture
+def budget(tmp_path: Path) -> Budget:
+    db = tmp_path / "barabot.sqlite"
+    migrate(db)
+    return Budget(db, jev_limit_usd=1.0, jev_price_per_m_input=1.0)
+
+
+def test_every_request_is_charged_to_the_subscriptions_it_checked(budget):
+    asyncio.run(JevDecider(FakeClient(), budget).decide("Сдаю 2+kk", [RENT, RENT_2]))
+    charges = budget.charges(START, budget.mark())
+    # FakeClient reports 500 input tokens: $0.0005 at $1 per million, half each
+    assert sorted((c.subscription_id, c.nano_usd) for c in charges) == [(1, 250_000), (2, 250_000)]
+
+
+def test_an_exhausted_budget_stops_requests(budget):
+    budget.record_jev(subscription_ids=[1], round=1, questions=1, photos=0, input_tokens=1_000_000, output_tokens=0)
     client = FakeClient()
-    decisions = asyncio.run(JevDecider(client).decide("Сдаю 2+kk", [RENT, RENT_2]))
+    with pytest.raises(BudgetExhausted):
+        asyncio.run(JevDecider(client, budget).decide("Сдаю", [RENT]))
+    assert client.requests == []
+
+
+def test_text_round_sends_text_only_and_reads_answers(budget):
+    client = FakeClient()
+    decisions = asyncio.run(JevDecider(client, budget).decide("Сдаю 2+kk", [RENT, RENT_2]))
     assert decisions == [
         Decision(1, 0.97, "fits", 0.8, 1, p_fits=0.8),
         Decision(2, 0.97, "unclear", 0.8, 1, p_fits=0.8),
@@ -112,30 +136,30 @@ def test_text_round_sends_text_only_and_reads_answers():
     assert request["headers"] is None
 
 
-def test_photo_round_sends_images_with_the_opt_in_header(tmp_path: Path):
+def test_photo_round_sends_images_with_the_opt_in_header(tmp_path: Path, budget):
     client = FakeClient()
     photo = tmp_path / "1-x.jpg"
     photo.write_bytes(b"jpeg")
-    decisions = asyncio.run(JevDecider(client).decide("Сдаю", [RENT_2], [photo]))
+    decisions = asyncio.run(JevDecider(client, budget).decide("Сдаю", [RENT_2], [photo]))
     assert decisions == [Decision(2, 0.97, "unclear", 0.8, 2, p_fits=0.8)]
     request = client.requests[0]
     assert request["headers"] == IMAGES_HEADER
     assert [type(p) for p in request["state"]["photos"]] == [Image]
 
 
-def test_photos_beyond_the_jev_limit_are_not_sent(tmp_path: Path):
+def test_photos_beyond_the_jev_limit_are_not_sent(tmp_path: Path, budget):
     client = FakeClient()
     photos = []
     for i in range(JEV_IMAGES.max_images + 2):
         photos.append(tmp_path / f"{i}-x.jpg")
         photos[-1].write_bytes(b"jpeg")
-    asyncio.run(JevDecider(client).decide("Сдаю", [RENT], photos))
+    asyncio.run(JevDecider(client, budget).decide("Сдаю", [RENT], photos))
     assert len(client.requests[0]["state"]["photos"]) == JEV_IMAGES.max_images
 
 
-def test_no_subscriptions_no_request():
+def test_no_subscriptions_no_request(budget):
     client = FakeClient()
-    assert asyncio.run(JevDecider(client).decide("Сдаю", [])) == []
+    assert asyncio.run(JevDecider(client, budget).decide("Сдаю", [])) == []
     assert client.requests == []
 
 

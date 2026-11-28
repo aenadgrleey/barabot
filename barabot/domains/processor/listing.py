@@ -55,7 +55,7 @@ from dbos import DBOS, DBOSConfiguredInstance, Queue, SetEnqueueOptions, SetWork
 from barabot.core.chats import message_link
 from barabot.core.db import ListingKey, connect, transaction
 from barabot.domains.bot.notifier import Notifier
-from barabot.domains.processor.budget import BudgetExhausted
+from barabot.domains.budget import BudgetExhausted
 from barabot.domains.processor.matching import (
     REJECTED_IMAGES,
     Decider,

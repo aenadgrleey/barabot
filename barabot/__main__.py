@@ -58,9 +58,9 @@ from barabot.core.web import WebService
 from barabot.domains.bot.client import TelethonSender, make_bot_client
 from barabot.domains.bot.notifier import Notifier
 from barabot.domains.bot.service import BotService
+from barabot.domains.budget import Budget
 from barabot.domains.mcp.server import build_connector, login_bot_mismatch
 from barabot.domains.miniapp import routes as miniapp
-from barabot.domains.processor.budget import Budget
 from barabot.domains.processor.listing import ListingProcessor
 from barabot.domains.processor.matching import JEV_IMAGES, JevDecider
 from barabot.domains.processor.stats import StatsReporter
@@ -131,7 +131,7 @@ def _build_matching(cfg: Config, budget: Budget) -> tuple[JevDecider, PhotoDownl
     """
     from typesafe_sdk import AsyncTypeSafeClient
 
-    decider = JevDecider(AsyncTypeSafeClient(api_key=cfg.typesafe_api_key), budget=budget)
+    decider = JevDecider(AsyncTypeSafeClient(api_key=cfg.typesafe_api_key), budget)
     return decider, PhotoDownloader(JEV_IMAGES, cfg.media_dir)
 
 
@@ -183,13 +183,13 @@ def _announce_start(cfg: Config, budget: Budget) -> None:
         conn.close()
     # The same chats the scraper reads: WATCH_CHATS and every chat the joiner has joined.
     watched = frozenset(cfg.watch_chats) | joined_chat_ids(cfg.db_path)
-    limit = f"${budget.limit_usd:.2f}" if budget.limit_usd else "no limit"
+    limit = f"${budget.jev_limit_usd:.2f}" if budget.jev_limit_usd else "no limit"
     notice(
         log,
         "barabot up: watching %d chat(s), %d active subscription(s), Jev spend $%.3f of %s",
         len(watched),
         active,
-        budget.spent_usd(),
+        budget.jev_spent_usd(),
         limit,
     )
 
@@ -210,7 +210,10 @@ async def _run_barabot() -> None:
     decider: JevDecider | None = None
     try:
         db.migrate(cfg.db_path)
-        budget = Budget(cfg.db_path, limit_usd=cfg.jev_budget_usd, price_per_m_input=cfg.jev_price_per_m_input)
+        budget = _build_budget(cfg)
+        adopted = budget.adopt_unledgered()
+        if adopted:
+            log.info("Charged %d Jev request(s) from before the spend ledger to no user", adopted)
         decider, photos = _build_matching(cfg, budget)
         # The bot exists, unconnected, before anything that uses it:
         # BotService connects its client, Notifier and the MCP connector send through it.
@@ -312,6 +315,29 @@ def _subscription_command(args: argparse.Namespace) -> int:
     return 1
 
 
+def _build_budget(cfg: Config) -> Budget:
+    """The one Budget of the process; everything that pays or reports on spend gets this instance."""
+    return Budget(cfg.db_path, jev_limit_usd=cfg.jev_budget_usd, jev_price_per_m_input=cfg.jev_price_per_m_input)
+
+
+def _spend_command(args: argparse.Namespace) -> int:
+    from barabot.domains.budget import to_usd
+
+    cfg = _load_config_or_exit()
+    db.migrate(cfg.db_path)
+    budget = _build_budget(cfg)
+    limit = f"${budget.jev_limit_usd:.2f}" if budget.jev_limit_usd else "no limit"
+    print(f"total ${to_usd(budget.total_nano()):.4f}; Jev ${budget.jev_spent_usd():.4f} of {limit}")
+    print(f"\nlast {args.days} day(s):")
+    for day in budget.by_day(days=args.days):
+        print(f"  {day.day}  ${to_usd(day.nano_usd):.4f}")
+    print("\nby user, all time:")
+    for row in budget.by_user():
+        who = row.user_id if row.user_id is not None else "before ledger"
+        print(f"  {who!s:>14}  ${to_usd(row.nano_usd):.4f}  {row.requests} request(s)")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="barabot")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -358,6 +384,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     subs_sub.add_parser("list", help="List subscriptions.")
     p_remove = subs_sub.add_parser("remove", help="Deactivate a subscription.")
     p_remove.add_argument("id", type=int)
+
+    p_spend = sub.add_parser("spend", help="Show spend from the ledger: total, per day and per user.")
+    p_spend.add_argument("--days", type=int, default=7, help="How many recent days to list")
 
     p_bot = sub.add_parser("bot", help="Manage the Telegram bot.")
     bot_sub = p_bot.add_subparsers(dest="bot_cmd", required=True)
@@ -407,6 +436,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.cmd == "subscription":
         return _subscription_command(args)
+
+    if args.cmd == "spend":
+        return _spend_command(args)
 
     if args.cmd == "processor" and args.processor_cmd == "redecide":
         from barabot.core.config import DATA_DIR
